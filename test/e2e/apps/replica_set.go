@@ -18,10 +18,14 @@ package apps
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	autoscalingv1 "k8s.io/api/autoscaling/v1"
+	"k8s.io/apimachinery/pkg/types"
+
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -87,7 +91,7 @@ var _ = SIGDescribe("ReplicaSet", func() {
 	f := framework.NewDefaultFramework("replicaset")
 
 	/*
-		Release : v1.9
+		Release: v1.9
 		Testname: Replica Set, run basic image
 		Description: Create a ReplicaSet with a Pod and a single Container. Make sure that the Pod is running. Pod SHOULD send a valid response when queried.
 	*/
@@ -107,12 +111,24 @@ var _ = SIGDescribe("ReplicaSet", func() {
 	})
 
 	/*
-		Release : v1.13
+		Release: v1.13
 		Testname: Replica Set, adopt matching pods and release non matching pods
 		Description: A Pod is created, then a Replica Set (RS) whose label selector will match the Pod. The RS MUST either adopt the Pod or delete and replace it with a new Pod. When the labels on one of the Pods owned by the RS change to no longer match the RS's label selector, the RS MUST release the Pod and update the Pod's owner references
 	*/
 	framework.ConformanceIt("should adopt matching pods on creation and release no longer matching pods", func() {
 		testRSAdoptMatchingAndReleaseNotMatching(f)
+	})
+
+	/*
+		Release: v1.21
+		Testname: ReplicaSet, completes the scaling of a ReplicaSet subresource
+		Description: Create a ReplicaSet (RS) with a single Pod. The Pod MUST be verified
+		that it is running. The RS MUST get and verify the scale subresource count.
+		The RS MUST update and verify the scale subresource. The RS MUST patch and verify
+		a scale subresource.
+	*/
+	framework.ConformanceIt("Replicaset should have a working scale subresource", func() {
+		testRSScaleSubresources(f)
 	})
 })
 
@@ -148,9 +164,9 @@ func testReplicaSetServeImageOrFail(f *framework.Framework, test string, image s
 		if err != nil {
 			updatePod, getErr := f.ClientSet.CoreV1().Pods(f.Namespace.Name).Get(context.TODO(), pod.Name, metav1.GetOptions{})
 			if getErr == nil {
-				err = fmt.Errorf("Pod %q never run (phase: %s, conditions: %+v): %v", updatePod.Name, updatePod.Status.Phase, updatePod.Status.Conditions, err)
+				err = fmt.Errorf("pod %q never run (phase: %s, conditions: %+v): %v", updatePod.Name, updatePod.Status.Phase, updatePod.Status.Conditions, err)
 			} else {
-				err = fmt.Errorf("Pod %q never run: %v", pod.Name, err)
+				err = fmt.Errorf("pod %q never run: %v", pod.Name, err)
 			}
 		}
 		framework.ExpectNoError(err)
@@ -339,4 +355,68 @@ func testRSAdoptMatchingAndReleaseNotMatching(f *framework.Framework) {
 		return true, nil
 	})
 	framework.ExpectNoError(err)
+}
+
+func testRSScaleSubresources(f *framework.Framework) {
+	ns := f.Namespace.Name
+	c := f.ClientSet
+
+	// Create webserver pods.
+	rsPodLabels := map[string]string{
+		"name": "sample-pod",
+		"pod":  WebserverImageName,
+	}
+
+	rsName := "test-rs"
+	replicas := int32(1)
+	ginkgo.By(fmt.Sprintf("Creating replica set %q that asks for more than the allowed pod quota", rsName))
+	rs := newRS(rsName, replicas, rsPodLabels, WebserverImageName, WebserverImage, nil)
+	_, err := c.AppsV1().ReplicaSets(ns).Create(context.TODO(), rs, metav1.CreateOptions{})
+	framework.ExpectNoError(err)
+
+	// Verify that the required pods have come up.
+	err = e2epod.VerifyPodsRunning(c, ns, "sample-pod", false, replicas)
+	framework.ExpectNoError(err, "error in waiting for pods to come up: %s", err)
+
+	ginkgo.By("getting scale subresource")
+	scale, err := c.AppsV1().ReplicaSets(ns).GetScale(context.TODO(), rsName, metav1.GetOptions{})
+	if err != nil {
+		framework.Failf("Failed to get scale subresource: %v", err)
+	}
+	framework.ExpectEqual(scale.Spec.Replicas, int32(1))
+	framework.ExpectEqual(scale.Status.Replicas, int32(1))
+
+	ginkgo.By("updating a scale subresource")
+	scale.ResourceVersion = "" // indicate the scale update should be unconditional
+	scale.Spec.Replicas = 2
+	scaleResult, err := c.AppsV1().ReplicaSets(ns).UpdateScale(context.TODO(), rsName, scale, metav1.UpdateOptions{})
+	if err != nil {
+		framework.Failf("Failed to put scale subresource: %v", err)
+	}
+	framework.ExpectEqual(scaleResult.Spec.Replicas, int32(2))
+
+	ginkgo.By("verifying the replicaset Spec.Replicas was modified")
+	rs, err = c.AppsV1().ReplicaSets(ns).Get(context.TODO(), rsName, metav1.GetOptions{})
+	if err != nil {
+		framework.Failf("Failed to get statefulset resource: %v", err)
+	}
+	framework.ExpectEqual(*(rs.Spec.Replicas), int32(2))
+
+	ginkgo.By("Patch a scale subresource")
+	scale.ResourceVersion = "" // indicate the scale update should be unconditional
+	scale.Spec.Replicas = 4    // should be 2 after "UpdateScale" operation, now Patch to 4
+	rsScalePatchPayload, err := json.Marshal(autoscalingv1.Scale{
+		Spec: autoscalingv1.ScaleSpec{
+			Replicas: scale.Spec.Replicas,
+		},
+	})
+	framework.ExpectNoError(err, "Could not Marshal JSON for patch payload")
+
+	_, err = c.AppsV1().ReplicaSets(ns).Patch(context.TODO(), rsName, types.StrategicMergePatchType, []byte(rsScalePatchPayload), metav1.PatchOptions{}, "scale")
+	framework.ExpectNoError(err, "Failed to patch replicaset: %v", err)
+
+	rs, err = c.AppsV1().ReplicaSets(ns).Get(context.TODO(), rsName, metav1.GetOptions{})
+	framework.ExpectNoError(err, "Failed to get replicaset resource: %v", err)
+	framework.ExpectEqual(*(rs.Spec.Replicas), int32(4), "replicaset should have 4 replicas")
+
 }

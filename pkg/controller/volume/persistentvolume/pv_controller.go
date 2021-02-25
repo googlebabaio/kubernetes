@@ -45,11 +45,13 @@ import (
 	"k8s.io/kubernetes/pkg/controller/volume/persistentvolume/metrics"
 	pvutil "k8s.io/kubernetes/pkg/controller/volume/persistentvolume/util"
 	"k8s.io/kubernetes/pkg/features"
+	proxyutil "k8s.io/kubernetes/pkg/proxy/util"
 	"k8s.io/kubernetes/pkg/util/goroutinemap"
 	"k8s.io/kubernetes/pkg/util/goroutinemap/exponentialbackoff"
 	vol "k8s.io/kubernetes/pkg/volume"
 	"k8s.io/kubernetes/pkg/volume/util"
 	"k8s.io/kubernetes/pkg/volume/util/recyclerclient"
+	volumetypes "k8s.io/kubernetes/pkg/volume/util/types"
 
 	"k8s.io/klog/v2"
 )
@@ -235,6 +237,9 @@ type PersistentVolumeController struct {
 
 	translator               CSINameTranslator
 	csiMigratedPluginManager CSIMigratedPluginManager
+
+	// filteredDialOptions configures any dialing done by the controller.
+	filteredDialOptions *proxyutil.FilteredDialOptions
 }
 
 // syncClaim is the main controller method to decide what to do with a claim.
@@ -577,9 +582,10 @@ func (ctrl *PersistentVolumeController) syncVolume(volume *v1.PersistentVolume) 
 		if err != nil {
 			return err
 		}
-		if !found && metav1.HasAnnotation(volume.ObjectMeta, pvutil.AnnBoundByController) {
-			// If PV is bound by external PV binder (e.g. kube-scheduler), it's
-			// possible on heavy load that corresponding PVC is not synced to
+		if !found {
+			// If the PV was created by an external PV provisioner or
+			// bound by external PV binder (e.g. kube-scheduler), it's
+			// possible under heavy load that the corresponding PVC is not synced to
 			// controller local cache yet. So we need to double-check PVC in
 			//   1) informer cache
 			//   2) apiserver if not found in informer cache
@@ -1407,7 +1413,7 @@ func (ctrl *PersistentVolumeController) doDeleteVolume(volume *v1.PersistentVolu
 
 	opComplete := util.OperationCompleteHook(pluginName, "volume_delete")
 	err = deleter.Delete()
-	opComplete(&err)
+	opComplete(volumetypes.CompleteFuncParam{Err: &err})
 	if err != nil {
 		// Deleter failed
 		return pluginName, false, err
@@ -1553,7 +1559,7 @@ func (ctrl *PersistentVolumeController) provisionClaimOperation(
 
 	opComplete := util.OperationCompleteHook(plugin.GetPluginName(), "volume_provision")
 	volume, err = provisioner.Provision(selectedNode, allowedTopologies)
-	opComplete(&err)
+	opComplete(volumetypes.CompleteFuncParam{Err: &err})
 	if err != nil {
 		// Other places of failure have nothing to do with VolumeScheduling,
 		// so just let controller retry in the next sync. We'll only call func

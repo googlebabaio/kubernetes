@@ -96,7 +96,7 @@ type Controller struct {
 // in sync with their corresponding Job objects.
 func NewController(podInformer coreinformers.PodInformer, jobInformer batchinformers.JobInformer, kubeClient clientset.Interface) *Controller {
 	eventBroadcaster := record.NewBroadcaster()
-	eventBroadcaster.StartLogging(klog.Infof)
+	eventBroadcaster.StartStructuredLogging(0)
 	eventBroadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: kubeClient.CoreV1().Events("")})
 
 	if kubeClient != nil && kubeClient.CoreV1().RESTClient().GetRateLimiter() != nil {
@@ -202,7 +202,7 @@ func (jm *Controller) resolveControllerRef(namespace string, controllerRef *meta
 func (jm *Controller) addPod(obj interface{}) {
 	pod := obj.(*v1.Pod)
 	if pod.DeletionTimestamp != nil {
-		// on a restart of the controller controller, it's possible a new pod shows up in a state that
+		// on a restart of the controller, it's possible a new pod shows up in a state that
 		// is already pending deletion. Prevent the pod from being a creation observation.
 		jm.deletePod(pod)
 		return
@@ -348,7 +348,7 @@ func (jm *Controller) updateJob(old, cur interface{}) {
 			total := time.Duration(*curADS) * time.Second
 			// AddAfter will handle total < passed
 			jm.queue.AddAfter(key, total-passed)
-			klog.V(4).Infof("job ActiveDeadlineSeconds updated, will rsync after %d seconds", total-passed)
+			klog.V(4).Infof("job %q ActiveDeadlineSeconds updated, will rsync after %d seconds", key, total-passed)
 		}
 	}
 }
@@ -467,9 +467,6 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 		return true, nil
 	}
 
-	// retrieve the previous number of retry
-	previousRetry := jm.queue.NumRequeues(key)
-
 	// Check the expectations of the job before counting active pods, otherwise a new pod can sneak in
 	// and update the expectations after we've retrieved active pods from the store. If a new pod enters
 	// the store after we've checked the expectation, the job sync is just deferred till the next relist.
@@ -506,7 +503,7 @@ func (jm *Controller) syncJob(key string) (bool, error) {
 	// is different than parallelism, otherwise the previous controller loop
 	// failed updating status so even if we pick up failure it is not a new one
 	exceedsBackoffLimit := jobHaveNewFailure && (active != *job.Spec.Parallelism) &&
-		(int32(previousRetry)+1 > *job.Spec.BackoffLimit)
+		(failed > *job.Spec.BackoffLimit)
 
 	if exceedsBackoffLimit || pastBackoffLimitOnFailure(&job, pods) {
 		// check if the number of pod restart exceeds backoff (for restart OnFailure only)

@@ -20,7 +20,6 @@ import (
 	"context"
 
 	batchv1beta1 "k8s.io/api/batch/v1beta1"
-	batchv2alpha1 "k8s.io/api/batch/v2alpha1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation/field"
@@ -31,7 +30,6 @@ import (
 	"k8s.io/kubernetes/pkg/api/pod"
 	"k8s.io/kubernetes/pkg/apis/batch"
 	"k8s.io/kubernetes/pkg/apis/batch/validation"
-	corevalidation "k8s.io/kubernetes/pkg/apis/core/validation"
 )
 
 // cronJobStrategy implements verification logic for Replication Controllers.
@@ -43,7 +41,7 @@ type cronJobStrategy struct {
 // Strategy is the default logic that applies when creating and updating CronJob objects.
 var Strategy = cronJobStrategy{legacyscheme.Scheme, names.SimpleNameGenerator}
 
-// DefaultGarbageCollectionPolicy returns OrphanDependents for batch/v1beta1 and batch/v2alpha1 for backwards compatibility,
+// DefaultGarbageCollectionPolicy returns OrphanDependents for batch/v1beta1 for backwards compatibility,
 // and DeleteDependents for all other versions.
 func (cronJobStrategy) DefaultGarbageCollectionPolicy(ctx context.Context) rest.GarbageCollectionPolicy {
 	var groupVersion schema.GroupVersion
@@ -51,7 +49,7 @@ func (cronJobStrategy) DefaultGarbageCollectionPolicy(ctx context.Context) rest.
 		groupVersion = schema.GroupVersion{Group: requestInfo.APIGroup, Version: requestInfo.APIVersion}
 	}
 	switch groupVersion {
-	case batchv1beta1.SchemeGroupVersion, batchv2alpha1.SchemeGroupVersion:
+	case batchv1beta1.SchemeGroupVersion:
 		// for back compatibility
 		return rest.OrphanDependents
 	default:
@@ -84,9 +82,8 @@ func (cronJobStrategy) PrepareForUpdate(ctx context.Context, obj, old runtime.Ob
 // Validate validates a new scheduled job.
 func (cronJobStrategy) Validate(ctx context.Context, obj runtime.Object) field.ErrorList {
 	cronJob := obj.(*batch.CronJob)
-	allErrs := validation.ValidateCronJob(cronJob)
-	allErrs = append(allErrs, corevalidation.ValidateConditionalPodTemplate(&cronJob.Spec.JobTemplate.Spec.Template, nil, field.NewPath("spec.jobTemplate.spec.template"))...)
-	return allErrs
+	opts := pod.GetValidationOptionsFromPodTemplate(&cronJob.Spec.JobTemplate.Spec.Template, nil)
+	return validation.ValidateCronJob(cronJob, opts)
 }
 
 // Canonicalize normalizes the object after validation.
@@ -106,12 +103,9 @@ func (cronJobStrategy) AllowCreateOnUpdate() bool {
 func (cronJobStrategy) ValidateUpdate(ctx context.Context, obj, old runtime.Object) field.ErrorList {
 	newCronJob := obj.(*batch.CronJob)
 	oldCronJob := old.(*batch.CronJob)
-	allErrs := validation.ValidateCronJobUpdate(newCronJob, oldCronJob)
-	allErrs = append(allErrs, corevalidation.ValidateConditionalPodTemplate(
-		&newCronJob.Spec.JobTemplate.Spec.Template,
-		&oldCronJob.Spec.JobTemplate.Spec.Template,
-		field.NewPath("spec.jobTemplate.spec.template"))...)
-	return allErrs
+
+	opts := pod.GetValidationOptionsFromPodTemplate(&newCronJob.Spec.JobTemplate.Spec.Template, &oldCronJob.Spec.JobTemplate.Spec.Template)
+	return validation.ValidateCronJobUpdate(newCronJob, oldCronJob, opts)
 }
 
 type cronJobStatusStrategy struct {

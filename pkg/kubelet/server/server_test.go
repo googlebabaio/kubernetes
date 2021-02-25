@@ -36,9 +36,10 @@ import (
 	"time"
 
 	cadvisorapi "github.com/google/cadvisor/info/v1"
+	cadvisorapiv2 "github.com/google/cadvisor/info/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/httpstream"
@@ -47,14 +48,14 @@ import (
 	"k8s.io/apiserver/pkg/authentication/user"
 	"k8s.io/apiserver/pkg/authorization/authorizer"
 	"k8s.io/client-go/tools/remotecommand"
-	utiltesting "k8s.io/client-go/util/testing"
 	runtimeapi "k8s.io/cri-api/pkg/apis/runtime/v1alpha2"
+	statsapi "k8s.io/kubelet/pkg/apis/stats/v1alpha1"
 	api "k8s.io/kubernetes/pkg/apis/core"
-	statsapi "k8s.io/kubernetes/pkg/kubelet/apis/stats/v1alpha1"
 	"k8s.io/utils/pointer"
 
 	// Do some initialization to decode the query parameters correctly.
 	_ "k8s.io/kubernetes/pkg/apis/core/install"
+	kubeletconfiginternal "k8s.io/kubernetes/pkg/kubelet/apis/config"
 	"k8s.io/kubernetes/pkg/kubelet/cm"
 	kubecontainer "k8s.io/kubernetes/pkg/kubelet/container"
 	"k8s.io/kubernetes/pkg/kubelet/cri/streaming"
@@ -101,6 +102,10 @@ func (fk *fakeKubelet) LatestLoopEntryTime() time.Time {
 
 func (fk *fakeKubelet) GetPodByName(namespace, name string) (*v1.Pod, bool) {
 	return fk.podByNameFunc(namespace, name)
+}
+
+func (fk *fakeKubelet) GetRequestedContainersInfo(containerName string, options cadvisorapiv2.RequestOptions) (map[string]*cadvisorapi.ContainerInfo, error) {
+	return map[string]*cadvisorapi.ContainerInfo{}, nil
 }
 
 func (fk *fakeKubelet) GetContainerInfo(podFullName string, uid types.UID, containerName string, req *cadvisorapi.ContainerInfoRequest) (*cadvisorapi.ContainerInfo, error) {
@@ -293,14 +298,24 @@ type serverTestFramework struct {
 	fakeKubelet     *fakeKubelet
 	fakeAuth        *fakeAuth
 	testHTTPServer  *httptest.Server
-	criHandler      *utiltesting.FakeHandler
 }
 
 func newServerTest() *serverTestFramework {
-	return newServerTestWithDebug(true, false, nil)
+	return newServerTestWithDebug(true, nil)
 }
 
-func newServerTestWithDebug(enableDebugging, redirectContainerStreaming bool, streamingServer streaming.Server) *serverTestFramework {
+func newServerTestWithDebug(enableDebugging bool, streamingServer streaming.Server) *serverTestFramework {
+	kubeCfg := &kubeletconfiginternal.KubeletConfiguration{
+		EnableDebuggingHandlers: enableDebugging,
+		EnableSystemLogHandler:  enableDebugging,
+		EnableProfilingHandler:  enableDebugging,
+		EnableDebugFlagsHandler: enableDebugging,
+	}
+	return newServerTestWithDebuggingHandlers(kubeCfg, streamingServer)
+}
+
+func newServerTestWithDebuggingHandlers(kubeCfg *kubeletconfiginternal.KubeletConfiguration, streamingServer streaming.Server) *serverTestFramework {
+
 	fw := &serverTestFramework{}
 	fw.fakeKubelet = &fakeKubelet{
 		hostnameFunc: func() string {
@@ -329,18 +344,12 @@ func newServerTestWithDebug(enableDebugging, redirectContainerStreaming bool, st
 			return authorizer.DecisionAllow, "", nil
 		},
 	}
-	fw.criHandler = &utiltesting.FakeHandler{
-		StatusCode: http.StatusOK,
-	}
 	server := NewServer(
 		fw.fakeKubelet,
 		stats.NewResourceAnalyzer(fw.fakeKubelet, time.Minute),
 		fw.fakeAuth,
 		true,
-		enableDebugging,
-		false,
-		redirectContainerStreaming,
-		fw.criHandler)
+		kubeCfg)
 	fw.serverUnderTest = &server
 	fw.testHTTPServer = httptest.NewServer(fw.serverUnderTest)
 	return fw
@@ -1025,7 +1034,7 @@ func TestServeExecInContainerIdleTimeout(t *testing.T) {
 	ss, err := newTestStreamingServer(100 * time.Millisecond)
 	require.NoError(t, err)
 	defer ss.testHTTPServer.Close()
-	fw := newServerTestWithDebug(true, false, ss)
+	fw := newServerTestWithDebug(true, ss)
 	defer fw.testHTTPServer.Close()
 
 	podNamespace := "other"
@@ -1066,7 +1075,6 @@ func testExecAttach(t *testing.T, verb string) {
 		tty                bool
 		responseStatusCode int
 		uid                bool
-		redirect           bool
 	}{
 		"no input or output":           {responseStatusCode: http.StatusBadRequest},
 		"stdin":                        {stdin: true, responseStatusCode: http.StatusSwitchingProtocols},
@@ -1075,7 +1083,6 @@ func testExecAttach(t *testing.T, verb string) {
 		"stdout and stderr":            {stdout: true, stderr: true, responseStatusCode: http.StatusSwitchingProtocols},
 		"stdin stdout and stderr":      {stdin: true, stdout: true, stderr: true, responseStatusCode: http.StatusSwitchingProtocols},
 		"stdin stdout stderr with uid": {stdin: true, stdout: true, stderr: true, responseStatusCode: http.StatusSwitchingProtocols, uid: true},
-		"stdout with redirect":         {stdout: true, responseStatusCode: http.StatusFound, redirect: true},
 	}
 
 	for desc := range tests {
@@ -1084,7 +1091,7 @@ func testExecAttach(t *testing.T, verb string) {
 			ss, err := newTestStreamingServer(0)
 			require.NoError(t, err)
 			defer ss.testHTTPServer.Close()
-			fw := newServerTestWithDebug(true, test.redirect, ss)
+			fw := newServerTestWithDebug(true, ss)
 			defer fw.testHTTPServer.Close()
 			fmt.Println(desc)
 
@@ -1192,16 +1199,8 @@ func testExecAttach(t *testing.T, verb string) {
 				upgradeRoundTripper httpstream.UpgradeRoundTripper
 				c                   *http.Client
 			)
-			if test.redirect {
-				c = &http.Client{}
-				// Don't follow redirects, since we want to inspect the redirect response.
-				c.CheckRedirect = func(*http.Request, []*http.Request) error {
-					return http.ErrUseLastResponse
-				}
-			} else {
-				upgradeRoundTripper = spdy.NewRoundTripper(nil, true, true)
-				c = &http.Client{Transport: upgradeRoundTripper}
-			}
+			upgradeRoundTripper = spdy.NewRoundTripper(nil, true, true)
+			c = &http.Client{Transport: upgradeRoundTripper}
 
 			resp, err = c.Do(makeReq(t, "POST", url, "v4.channel.k8s.io"))
 			require.NoError(t, err, "POSTing")
@@ -1288,7 +1287,7 @@ func TestServePortForwardIdleTimeout(t *testing.T) {
 	ss, err := newTestStreamingServer(100 * time.Millisecond)
 	require.NoError(t, err)
 	defer ss.testHTTPServer.Close()
-	fw := newServerTestWithDebug(true, false, ss)
+	fw := newServerTestWithDebug(true, ss)
 	defer fw.testHTTPServer.Close()
 
 	podNamespace := "other"
@@ -1324,7 +1323,6 @@ func TestServePortForward(t *testing.T) {
 		uid           bool
 		clientData    string
 		containerData string
-		redirect      bool
 		shouldError   bool
 	}{
 		"no port":                       {port: "", shouldError: true},
@@ -1337,7 +1335,6 @@ func TestServePortForward(t *testing.T) {
 		"normal port with data forward": {port: "8000", clientData: "client data", containerData: "container data", shouldError: false},
 		"max port":                      {port: "65535", shouldError: false},
 		"normal port with uid":          {port: "8000", uid: true, shouldError: false},
-		"normal port with redirect":     {port: "8000", redirect: true, shouldError: false},
 	}
 
 	podNamespace := "other"
@@ -1349,7 +1346,7 @@ func TestServePortForward(t *testing.T) {
 			ss, err := newTestStreamingServer(0)
 			require.NoError(t, err)
 			defer ss.testHTTPServer.Close()
-			fw := newServerTestWithDebug(true, test.redirect, ss)
+			fw := newServerTestWithDebug(true, ss)
 			defer fw.testHTTPServer.Close()
 
 			portForwardFuncDone := make(chan struct{})
@@ -1397,26 +1394,14 @@ func TestServePortForward(t *testing.T) {
 				c                   *http.Client
 			)
 
-			if test.redirect {
-				c = &http.Client{}
-				// Don't follow redirects, since we want to inspect the redirect response.
-				c.CheckRedirect = func(*http.Request, []*http.Request) error {
-					return http.ErrUseLastResponse
-				}
-			} else {
-				upgradeRoundTripper = spdy.NewRoundTripper(nil, true, true)
-				c = &http.Client{Transport: upgradeRoundTripper}
-			}
+			upgradeRoundTripper = spdy.NewRoundTripper(nil, true, true)
+			c = &http.Client{Transport: upgradeRoundTripper}
 
 			req := makeReq(t, "POST", url, "portforward.k8s.io")
 			resp, err := c.Do(req)
 			require.NoError(t, err, "POSTing")
 			defer resp.Body.Close()
 
-			if test.redirect {
-				assert.Equal(t, http.StatusFound, resp.StatusCode, "status code")
-				return
-			}
 			assert.Equal(t, http.StatusSwitchingProtocols, resp.StatusCode, "status code")
 
 			conn, err := upgradeRoundTripper.NewConnection(resp)
@@ -1455,22 +1440,6 @@ func TestServePortForward(t *testing.T) {
 	}
 }
 
-func TestCRIHandler(t *testing.T) {
-	fw := newServerTest()
-	defer fw.testHTTPServer.Close()
-
-	const (
-		path  = "/cri/exec/123456abcdef"
-		query = "cmd=echo+foo"
-	)
-	resp, err := http.Get(fw.testHTTPServer.URL + path + "?" + query)
-	require.NoError(t, err)
-	assert.Equal(t, http.StatusOK, resp.StatusCode)
-	assert.Equal(t, "GET", fw.criHandler.RequestReceived.Method)
-	assert.Equal(t, path, fw.criHandler.RequestReceived.URL.Path)
-	assert.Equal(t, query, fw.criHandler.RequestReceived.URL.RawQuery)
-}
-
 func TestMetricBuckets(t *testing.T) {
 	tests := map[string]struct {
 		url    string
@@ -1481,8 +1450,6 @@ func TestMetricBuckets(t *testing.T) {
 		"attach with uid":                 {url: "/attach/podNamespace/podID/uid/containerName", bucket: "attach"},
 		"configz":                         {url: "/configz", bucket: "configz"},
 		"containerLogs":                   {url: "/containerLogs/podNamespace/podID/containerName", bucket: "containerLogs"},
-		"cri":                             {url: "/cri/", bucket: "cri"},
-		"cri with sub":                    {url: "/cri/foo", bucket: "cri"},
 		"debug v flags":                   {url: "/debug/flags/v", bucket: "debug"},
 		"pprof with sub":                  {url: "/debug/pprof/subpath", bucket: "debug"},
 		"exec":                            {url: "/exec/podNamespace/podID/containerName", bucket: "exec"},
@@ -1496,7 +1463,6 @@ func TestMetricBuckets(t *testing.T) {
 		"metrics":                         {url: "/metrics", bucket: "metrics"},
 		"metrics cadvisor sub":            {url: "/metrics/cadvisor", bucket: "metrics/cadvisor"},
 		"metrics probes sub":              {url: "/metrics/probes", bucket: "metrics/probes"},
-		"metrics resource v1alpha1":       {url: "/metrics/resource/v1alpha1", bucket: "metrics/resource"},
 		"metrics resource sub":            {url: "/metrics/resource", bucket: "metrics/resource"},
 		"pods":                            {url: "/pods/", bucket: "pods"},
 		"portForward":                     {url: "/portForward/podNamespace/podID", bucket: "portForward"},
@@ -1544,7 +1510,15 @@ func TestMetricMethodBuckets(t *testing.T) {
 }
 
 func TestDebuggingDisabledHandlers(t *testing.T) {
-	fw := newServerTestWithDebug(false, false, nil)
+	// for backward compatibility even if enablesystemLogHandler or enableProfilingHandler is set but not
+	// enableDebuggingHandler then /logs, /pprof and /flags shouldn't be served.
+	kubeCfg := &kubeletconfiginternal.KubeletConfiguration{
+		EnableDebuggingHandlers: false,
+		EnableSystemLogHandler:  true,
+		EnableDebugFlagsHandler: true,
+		EnableProfilingHandler:  true,
+	}
+	fw := newServerTestWithDebuggingHandlers(kubeCfg, nil)
 	defer fw.testHTTPServer.Close()
 
 	paths := []string{
@@ -1554,19 +1528,7 @@ func TestDebuggingDisabledHandlers(t *testing.T) {
 	}
 
 	for _, p := range paths {
-		resp, err := http.Get(fw.testHTTPServer.URL + p)
-		require.NoError(t, err)
-		assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
-		body, err := ioutil.ReadAll(resp.Body)
-		require.NoError(t, err)
-		assert.Equal(t, "Debug endpoints are disabled.\n", string(body))
-
-		resp, err = http.Post(fw.testHTTPServer.URL+p, "", nil)
-		require.NoError(t, err)
-		assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
-		body, err = ioutil.ReadAll(resp.Body)
-		require.NoError(t, err)
-		assert.Equal(t, "Debug endpoints are disabled.\n", string(body))
+		verifyEndpointResponse(t, fw, p, "Debug endpoints are disabled.\n")
 	}
 
 	// test some other paths, make sure they're working
@@ -1596,7 +1558,19 @@ func TestDebuggingDisabledHandlers(t *testing.T) {
 	resp, err = http.Get(fw.testHTTPServer.URL + "/spec")
 	require.NoError(t, err)
 	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
 
+func TestDisablingLogAndProfilingHandler(t *testing.T) {
+	kubeCfg := &kubeletconfiginternal.KubeletConfiguration{
+		EnableDebuggingHandlers: true,
+	}
+	fw := newServerTestWithDebuggingHandlers(kubeCfg, nil)
+	defer fw.testHTTPServer.Close()
+
+	// verify debug endpoints are disabled
+	verifyEndpointResponse(t, fw, "/logs/kubelet.log", "logs endpoint is disabled.\n")
+	verifyEndpointResponse(t, fw, "/debug/pprof/profile?seconds=2", "profiling endpoint is disabled.\n")
+	verifyEndpointResponse(t, fw, "/debug/flags/v", "flags endpoint is disabled.\n")
 }
 
 func TestFailedParseParamsSummaryHandler(t *testing.T) {
@@ -1610,7 +1584,22 @@ func TestFailedParseParamsSummaryHandler(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 	assert.Contains(t, string(v), "parse form failed")
+}
 
+func verifyEndpointResponse(t *testing.T, fw *serverTestFramework, path string, expectedResponse string) {
+	resp, err := http.Get(fw.testHTTPServer.URL + path)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+	body, err := ioutil.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, expectedResponse, string(body))
+
+	resp, err = http.Post(fw.testHTTPServer.URL+path, "", nil)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+	body, err = ioutil.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, expectedResponse, string(body))
 }
 
 func TestTrimURLPath(t *testing.T) {

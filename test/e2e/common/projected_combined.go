@@ -20,7 +20,7 @@ import (
 	"context"
 	"fmt"
 
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/uuid"
 	"k8s.io/kubernetes/test/e2e/framework"
@@ -29,12 +29,12 @@ import (
 	"github.com/onsi/ginkgo"
 )
 
-var _ = ginkgo.Describe("[sig-storage] Projected combined", func() {
+var _ = SIGStorageDescribe("Projected combined", func() {
 	f := framework.NewDefaultFramework("projected")
 
 	// Test multiple projections
 	/*
-	   Release : v1.9
+	   Release: v1.9
 	   Testname: Projected Volume, multiple projections
 	   Description: A Pod is created with a projected volume source for secrets, configMap and downwardAPI with pod name, cpu and memory limits and cpu and memory requests. Pod MUST be able to read the secrets, configMap values and the cpu and memory limits as well as cpu and memory requests from the mounted DownwardAPIVolumeFiles.
 	*/

@@ -49,7 +49,6 @@ readonly KUBE_SUPPORTED_CLIENT_PLATFORMS=(
   linux/s390x
   linux/ppc64le
   darwin/amd64
-  darwin/386
   windows/amd64
   windows/386
 )
@@ -249,6 +248,7 @@ kube::golang::setup_platforms
 # If you update this list, please also update build/BUILD.
 readonly KUBE_CLIENT_TARGETS=(
   cmd/kubectl
+  cmd/kubectl-convert
 )
 readonly KUBE_CLIENT_BINARIES=("${KUBE_CLIENT_TARGETS[@]##*/}")
 readonly KUBE_CLIENT_BINARIES_WIN=("${KUBE_CLIENT_BINARIES[@]/%/.exe}")
@@ -394,28 +394,39 @@ kube::golang::set_platform_envs() {
   export GOOS=${platform%/*}
   export GOARCH=${platform##*/}
 
-  # Do not set CC when building natively on a platform, only if cross-compiling from linux/amd64
-  if [[ $(kube::golang::host_platform) == "linux/amd64" ]]; then
-    # Dynamic CGO linking for other server architectures than linux/amd64 goes here
+  # Do not set CC when building natively on a platform, only if cross-compiling
+  if [[ $(kube::golang::host_platform) != "$platform" ]]; then
+    # Dynamic CGO linking for other server architectures than host architecture goes here
     # If you want to include support for more server platforms than these, add arch-specific gcc names here
     case "${platform}" in
+      "linux/amd64")
+        export CGO_ENABLED=1
+        export CC=${KUBE_LINUX_AMD64_CC:-x86_64-linux-gnu-gcc}
+        ;;
       "linux/arm")
         export CGO_ENABLED=1
-        export CC=arm-linux-gnueabihf-gcc
+        export CC=${KUBE_LINUX_ARM_CC:-arm-linux-gnueabihf-gcc}
         ;;
       "linux/arm64")
         export CGO_ENABLED=1
-        export CC=aarch64-linux-gnu-gcc
+        export CC=${KUBE_LINUX_ARM64_CC:-aarch64-linux-gnu-gcc}
         ;;
       "linux/ppc64le")
         export CGO_ENABLED=1
-        export CC=powerpc64le-linux-gnu-gcc
+        export CC=${KUBE_LINUX_PPC64LE_CC:-powerpc64le-linux-gnu-gcc}
         ;;
       "linux/s390x")
         export CGO_ENABLED=1
-        export CC=s390x-linux-gnu-gcc
+        export CC=${KUBE_LINUX_S390X_CC:-s390x-linux-gnu-gcc}
         ;;
     esac
+  fi
+
+  # if CC is defined for platform then always enable it
+  ccenv=$(echo "$platform" | awk -F/ '{print "KUBE_" toupper($1) "_" toupper($2) "_CC"}')
+  if [ -n "${!ccenv-}" ]; then 
+    export CGO_ENABLED=1
+    export CC="${!ccenv}"
   fi
 }
 
@@ -466,9 +477,9 @@ EOF
   fi
 
   local go_version
-  IFS=" " read -ra go_version <<< "$(go version)"
+  IFS=" " read -ra go_version <<< "$(GOFLAGS='' go version)"
   local minimum_go_version
-  minimum_go_version=go1.13.4
+  minimum_go_version=go1.15.0
   if [[ "${minimum_go_version}" != $(echo -e "${minimum_go_version}\n${go_version[2]}" | sort -s -t. -k 1,1 -k 2,2n -k 3,3n | head -n1) && "${go_version[2]}" != "devel" ]]; then
     kube::log::usage_from_stdin <<EOF
 Detected go version: ${go_version[*]}.
@@ -778,7 +789,7 @@ kube::golang::build_binaries() {
   (
     # Check for `go` binary and set ${GOPATH}.
     kube::golang::setup_env
-    V=2 kube::log::info "Go version: $(go version)"
+    V=2 kube::log::info "Go version: $(GOFLAGS='' go version)"
 
     local host_platform
     host_platform=$(kube::golang::host_platform)
@@ -794,7 +805,7 @@ kube::golang::build_binaries() {
 
     # extract tags if any specified in GOFLAGS
     # shellcheck disable=SC2001
-    gotags="selinux,$(echo "${GOFLAGS:-}" | sed -e 's|.*-tags=\([^-]*\).*|\1|')"
+    gotags="selinux,notest,$(echo "${GOFLAGS:-}" | sed -e 's|.*-tags=\([^-]*\).*|\1|')"
 
     local -a targets=()
     local arg

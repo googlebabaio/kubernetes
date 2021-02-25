@@ -15,6 +15,7 @@ go_test(
         "map_string_bool_test.go",
         "map_string_string_test.go",
         "namedcertkey_flag_test.go",
+        "string_slice_flag_test.go",
     ],
     embed = [":go_default_library"],
     deps = ["//vendor/github.com/spf13/pflag:go_default_library"],
@@ -24,6 +25,7 @@ go_library(
     name = "go_default_library",
     srcs = [
         "ciphersuites_flag.go",
+        "ciphersuites_flag_114.go",
         "colon_separated_multimap_string_string.go",
         "configuration_map.go",
         "flags.go",
@@ -35,6 +37,7 @@ go_library(
         "omitempty.go",
         "sectioned.go",
         "string_flag.go",
+        "string_slice_flag.go",
         "tristate.go",
     ],
     importmap = "k8s.io/kubernetes/vendor/k8s.io/component-base/cli/flag",

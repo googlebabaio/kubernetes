@@ -1,10 +1,11 @@
 # See the OWNERS docs at https://go.k8s.io/owners
 
 approvers:
-- michmike
-- patricklang
 - benmoss
 - ddebroy
+- marosset
+- michmike
+- ravisantoshgudimetla
 reviewers:
 - adelina-t
 - bclau
@@ -13,9 +14,10 @@ reviewers:
 - feiskyer
 - ksubrmnn
 - madhanrm
-- marosset
 - yujuhong
+- ravisantoshgudimetla
 emeritus_approvers:
 - dchen1107
+- patricklang
 labels:
 - sig/windows

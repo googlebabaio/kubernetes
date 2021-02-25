@@ -33,7 +33,6 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	clientset "k8s.io/client-go/kubernetes"
-	api "k8s.io/kubernetes/pkg/apis/core"
 	nodepkg "k8s.io/kubernetes/pkg/controller/nodelifecycle"
 	"k8s.io/kubernetes/test/e2e/common"
 	"k8s.io/kubernetes/test/e2e/framework"
@@ -123,7 +122,7 @@ var _ = SIGDescribe("Network Partition [Disruptive] [Slow]", func() {
 
 		// TODO(foxish): Re-enable testing on gce after kubernetes#56787 is fixed.
 		e2eskipper.SkipUnlessProviderIs("gke", "aws")
-		if strings.Index(framework.TestContext.CloudConfig.NodeInstanceGroup, ",") >= 0 {
+		if strings.Contains(framework.TestContext.CloudConfig.NodeInstanceGroup, ",") {
 			framework.Failf("Test dose not support cluster setup with more than one MIG: %s", framework.TestContext.CloudConfig.NodeInstanceGroup)
 		}
 	})
@@ -152,7 +151,7 @@ var _ = SIGDescribe("Network Partition [Disruptive] [Slow]", func() {
 					if !e2enode.IsConditionSetAsExpected(&node, v1.NodeReady, true) {
 						return false
 					}
-					podOpts = metav1.ListOptions{FieldSelector: fields.OneTermEqualSelector(api.PodHostField, node.Name).String()}
+					podOpts = metav1.ListOptions{FieldSelector: fields.OneTermEqualSelector("spec.nodeName", node.Name).String()}
 					pods, err := c.CoreV1().Pods(metav1.NamespaceAll).List(context.TODO(), podOpts)
 					if err != nil || len(pods.Items) <= 0 {
 						return false
@@ -163,7 +162,7 @@ var _ = SIGDescribe("Network Partition [Disruptive] [Slow]", func() {
 					framework.Failf("No eligible node were found: %d", len(nodes.Items))
 				}
 				node := nodes.Items[0]
-				podOpts = metav1.ListOptions{FieldSelector: fields.OneTermEqualSelector(api.PodHostField, node.Name).String()}
+				podOpts = metav1.ListOptions{FieldSelector: fields.OneTermEqualSelector("spec.nodeName", node.Name).String()}
 				if err = e2epod.WaitForMatchPodsCondition(c, podOpts, "Running and Ready", podReadyTimeout, testutils.PodRunningReady); err != nil {
 					framework.Failf("Pods on node %s are not ready and running within %v: %v", node.Name, podReadyTimeout, err)
 				}
@@ -204,14 +203,14 @@ var _ = SIGDescribe("Network Partition [Disruptive] [Slow]", func() {
 				}()
 				go controller.Run(stopCh)
 
-				ginkgo.By(fmt.Sprintf("Block traffic from node %s to the master", node.Name))
+				ginkgo.By(fmt.Sprintf("Block traffic from node %s to the control plane", node.Name))
 				host, err := e2enode.GetExternalIP(&node)
 				framework.ExpectNoError(err)
-				masterAddresses := framework.GetAllMasterAddresses(c)
+				controlPlaneAddresses := framework.GetControlPlaneAddresses(c)
 				defer func() {
-					ginkgo.By(fmt.Sprintf("Unblock traffic from node %s to the master", node.Name))
-					for _, masterAddress := range masterAddresses {
-						e2enetwork.UnblockNetwork(host, masterAddress)
+					ginkgo.By(fmt.Sprintf("Unblock traffic from node %s to the control plane", node.Name))
+					for _, instanceAddress := range controlPlaneAddresses {
+						e2enetwork.UnblockNetwork(host, instanceAddress)
 					}
 
 					if ginkgo.CurrentGinkgoTestDescription().Failed {
@@ -225,8 +224,8 @@ var _ = SIGDescribe("Network Partition [Disruptive] [Slow]", func() {
 					}
 				}()
 
-				for _, masterAddress := range masterAddresses {
-					e2enetwork.BlockNetwork(host, masterAddress)
+				for _, instanceAddress := range controlPlaneAddresses {
+					e2enetwork.BlockNetwork(host, instanceAddress)
 				}
 
 				ginkgo.By("Expect to observe node and pod status change from Ready to NotReady after network partition")
@@ -501,7 +500,7 @@ var _ = SIGDescribe("Network Partition [Disruptive] [Slow]", func() {
 					if !e2enode.IsConditionSetAsExpected(&node, v1.NodeReady, true) {
 						return false
 					}
-					podOpts = metav1.ListOptions{FieldSelector: fields.OneTermEqualSelector(api.PodHostField, node.Name).String()}
+					podOpts = metav1.ListOptions{FieldSelector: fields.OneTermEqualSelector("spec.nodeName", node.Name).String()}
 					pods, err := c.CoreV1().Pods(metav1.NamespaceAll).List(context.TODO(), podOpts)
 					if err != nil || len(pods.Items) <= 0 {
 						return false
@@ -512,7 +511,7 @@ var _ = SIGDescribe("Network Partition [Disruptive] [Slow]", func() {
 					framework.Failf("No eligible node were found: %d", len(nodes.Items))
 				}
 				node := nodes.Items[0]
-				podOpts = metav1.ListOptions{FieldSelector: fields.OneTermEqualSelector(api.PodHostField, node.Name).String()}
+				podOpts = metav1.ListOptions{FieldSelector: fields.OneTermEqualSelector("spec.nodeName", node.Name).String()}
 				if err := e2epod.WaitForMatchPodsCondition(c, podOpts, "Running and Ready", podReadyTimeout, testutils.PodRunningReadyOrSucceeded); err != nil {
 					framework.Failf("Pods on node %s are not ready and running within %v: %v", node.Name, podReadyTimeout, err)
 				}
@@ -592,14 +591,14 @@ var _ = SIGDescribe("Network Partition [Disruptive] [Slow]", func() {
 				}()
 				go controller.Run(stopCh)
 
-				ginkgo.By(fmt.Sprintf("Block traffic from node %s to the master", node.Name))
+				ginkgo.By(fmt.Sprintf("Block traffic from node %s to the control plane", node.Name))
 				host, err := e2enode.GetExternalIP(&node)
 				framework.ExpectNoError(err)
-				masterAddresses := framework.GetAllMasterAddresses(c)
+				controlPlaneAddresses := framework.GetControlPlaneAddresses(c)
 				defer func() {
-					ginkgo.By(fmt.Sprintf("Unblock traffic from node %s to the master", node.Name))
-					for _, masterAddress := range masterAddresses {
-						e2enetwork.UnblockNetwork(host, masterAddress)
+					ginkgo.By(fmt.Sprintf("Unblock traffic from node %s to the control plane", node.Name))
+					for _, instanceAddress := range controlPlaneAddresses {
+						e2enetwork.UnblockNetwork(host, instanceAddress)
 					}
 
 					if ginkgo.CurrentGinkgoTestDescription().Failed {
@@ -610,8 +609,8 @@ var _ = SIGDescribe("Network Partition [Disruptive] [Slow]", func() {
 					expectNodeReadiness(true, newNode)
 				}()
 
-				for _, masterAddress := range masterAddresses {
-					e2enetwork.BlockNetwork(host, masterAddress)
+				for _, instanceAddress := range controlPlaneAddresses {
+					e2enetwork.BlockNetwork(host, instanceAddress)
 				}
 
 				ginkgo.By("Expect to observe node and pod status change from Ready to NotReady after network partition")

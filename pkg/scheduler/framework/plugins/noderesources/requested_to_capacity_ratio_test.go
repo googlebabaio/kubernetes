@@ -18,6 +18,7 @@ package noderesources
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -25,7 +26,8 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/kubernetes/pkg/scheduler/apis/config"
-	framework "k8s.io/kubernetes/pkg/scheduler/framework/v1alpha1"
+	"k8s.io/kubernetes/pkg/scheduler/framework"
+	"k8s.io/kubernetes/pkg/scheduler/framework/runtime"
 	"k8s.io/kubernetes/pkg/scheduler/internal/cache"
 )
 
@@ -66,7 +68,7 @@ func TestRequestedToCapacityRatio(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			state := framework.NewCycleState()
 			snapshot := cache.NewSnapshot(test.scheduledPods, test.nodes)
-			fh, _ := framework.NewFramework(nil, nil, nil, framework.WithSnapshotSharedLister(snapshot))
+			fh, _ := runtime.NewFramework(nil, nil, nil, runtime.WithSnapshotSharedLister(snapshot))
 			args := config.RequestedToCapacityRatioArgs{
 				Shape: []config.UtilizationShapePoint{
 					{Utilization: 0, Score: 10},
@@ -172,11 +174,13 @@ func TestBrokenLinearFunction(t *testing.T) {
 		},
 	}
 
-	for _, test := range tests {
-		function := buildBrokenLinearFunction(test.points)
-		for _, assertion := range test.assertions {
-			assert.InDelta(t, assertion.expected, function(assertion.p), 0.1, "points=%v, p=%f", test.points, assertion.p)
-		}
+	for i, test := range tests {
+		t.Run(fmt.Sprintf("case_%d", i), func(t *testing.T) {
+			function := buildBrokenLinearFunction(test.points)
+			for _, assertion := range test.assertions {
+				assert.InDelta(t, assertion.expected, function(assertion.p), 0.1, "points=%v, p=%f", test.points, assertion.p)
+			}
+		})
 	}
 }
 
@@ -318,7 +322,7 @@ func TestResourceBinPackingSingleExtended(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			state := framework.NewCycleState()
 			snapshot := cache.NewSnapshot(test.pods, test.nodes)
-			fh, _ := framework.NewFramework(nil, nil, nil, framework.WithSnapshotSharedLister(snapshot))
+			fh, _ := runtime.NewFramework(nil, nil, nil, runtime.WithSnapshotSharedLister(snapshot))
 			args := config.RequestedToCapacityRatioArgs{
 				Shape: []config.UtilizationShapePoint{
 					{Utilization: 0, Score: 0},
@@ -561,7 +565,7 @@ func TestResourceBinPackingMultipleExtended(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			state := framework.NewCycleState()
 			snapshot := cache.NewSnapshot(test.pods, test.nodes)
-			fh, _ := framework.NewFramework(nil, nil, nil, framework.WithSnapshotSharedLister(snapshot))
+			fh, _ := runtime.NewFramework(nil, nil, nil, runtime.WithSnapshotSharedLister(snapshot))
 			args := config.RequestedToCapacityRatioArgs{
 				Shape: []config.UtilizationShapePoint{
 					{Utilization: 0, Score: 0},

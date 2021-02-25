@@ -32,7 +32,7 @@ import (
 	"github.com/onsi/ginkgo"
 )
 
-var _ = framework.KubeDescribe("Container Runtime Conformance Test", func() {
+var _ = SIGDescribe("Container Runtime Conformance Test", func() {
 	f := framework.NewDefaultFramework("runtime-conformance")
 
 	ginkgo.Describe("container runtime conformance blackbox test", func() {
@@ -48,9 +48,9 @@ var _ = framework.KubeDescribe("Container Runtime Conformance Test", func() {
 		}
 	}
 }`
-			// The following images are not added into NodeImageWhiteList, because this test is
+			// The following images are not added into NodePrePullImageList, because this test is
 			// testing image pulling, these images don't need to be prepulled. The ImagePullPolicy
-			// is v1.PullAlways, so it won't be blocked by framework image white list check.
+			// is v1.PullAlways, so it won't be blocked by framework image pre-pull list check.
 			for _, testCase := range []struct {
 				description string
 				image       string

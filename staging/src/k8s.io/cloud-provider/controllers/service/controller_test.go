@@ -42,7 +42,6 @@ import (
 	"k8s.io/client-go/util/workqueue"
 	fakecloud "k8s.io/cloud-provider/fake"
 	servicehelper "k8s.io/cloud-provider/service/helpers"
-	"k8s.io/klog/v2"
 )
 
 const region = "us-central"
@@ -79,7 +78,7 @@ func newController() (*Controller, *fakecloud.Cloud, *fake.Clientset) {
 	nodeInformer := informerFactory.Core().V1().Nodes()
 
 	broadcaster := record.NewBroadcaster()
-	broadcaster.StartLogging(klog.Infof)
+	broadcaster.StartStructuredLogging(0)
 	broadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: kubeClient.CoreV1().Events("")})
 	recorder := broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "service-controller"})
 
@@ -1374,10 +1373,8 @@ func Test_getNodeConditionPredicate(t *testing.T) {
 	tests := []struct {
 		name string
 
-		enableExclusion bool
-		enableLegacy    bool
-		input           *v1.Node
-		want            bool
+		input *v1.Node
+		want  bool
 	}{
 		{want: false, input: &v1.Node{}},
 		{want: true, input: &v1.Node{Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}}}},
@@ -1385,21 +1382,11 @@ func Test_getNodeConditionPredicate(t *testing.T) {
 		{want: true, input: &v1.Node{Spec: v1.NodeSpec{Unschedulable: true}, Status: v1.NodeStatus{Conditions: []v1.NodeCondition{{Type: v1.NodeReady, Status: v1.ConditionTrue}}}}},
 
 		{want: true, input: &v1.Node{Status: validNodeStatus, ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{}}}},
-		{want: true, input: &v1.Node{Status: validNodeStatus, ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{labelNodeRoleMaster: ""}}}},
-		{want: true, input: &v1.Node{Status: validNodeStatus, ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{labelNodeRoleExcludeBalancer: ""}}}},
-
-		{want: true, enableExclusion: true, input: &v1.Node{Status: validNodeStatus, ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{labelNodeRoleMaster: ""}}}},
-		{want: true, enableLegacy: true, input: &v1.Node{Status: validNodeStatus, ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{labelNodeRoleExcludeBalancer: ""}}}},
-
-		{want: false, enableLegacy: true, input: &v1.Node{Status: validNodeStatus, ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{labelNodeRoleMaster: ""}}}},
-		{want: false, enableExclusion: true, input: &v1.Node{Status: validNodeStatus, ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{labelNodeRoleExcludeBalancer: ""}}}},
+		{want: false, input: &v1.Node{Status: validNodeStatus, ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{v1.LabelNodeExcludeBalancers: ""}}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := &Controller{
-				legacyNodeRoleFeatureEnabled:       tt.enableLegacy,
-				serviceNodeExclusionFeatureEnabled: tt.enableExclusion,
-			}
+			c := &Controller{}
 
 			if result := c.getNodeConditionPredicate()(tt.input); result != tt.want {
 				t.Errorf("getNodeConditionPredicate() = %v, want %v", result, tt.want)
@@ -1511,7 +1498,7 @@ func Test_shouldSyncNode(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{
 					Name: "node",
 					Labels: map[string]string{
-						labelNodeRoleExcludeBalancer: "",
+						v1.LabelNodeExcludeBalancers: "",
 					},
 				},
 			},

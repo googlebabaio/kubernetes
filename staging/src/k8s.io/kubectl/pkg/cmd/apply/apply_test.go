@@ -97,6 +97,7 @@ const (
 	filenameRCPatchTest       = "../../../testdata/apply/patch.json"
 	dirName                   = "../../../testdata/apply/testdir"
 	filenameRCJSON            = "../../../testdata/apply/rc.json"
+	filenamePodGeneratedName  = "../../../testdata/apply/pod-generated-name.yaml"
 
 	filenameWidgetClientside    = "../../../testdata/apply/widget-clientside.yaml"
 	filenameWidgetServerside    = "../../../testdata/apply/widget-serverside.yaml"
@@ -313,7 +314,7 @@ func TestRunApplyPrintsValidObjectList(t *testing.T) {
 	cmd := NewCmdApply("kubectl", tf, ioStreams)
 	cmd.Flags().Set("filename", filenameCM)
 	cmd.Flags().Set("output", "json")
-	cmd.Flags().Set("dry-run", "true")
+	cmd.Flags().Set("dry-run", "client")
 	cmd.Run(cmd, []string{})
 
 	// ensure that returned list can be unmarshaled back into a configmap list
@@ -503,7 +504,7 @@ func TestApplyObjectWithoutAnnotation(t *testing.T) {
 
 	// uses the name from the file, not the response
 	expectRC := "replicationcontroller/" + nameRC + "\n"
-	expectWarning := fmt.Sprintf(warningNoLastAppliedConfigAnnotation, "kubectl")
+	expectWarning := fmt.Sprintf(warningNoLastAppliedConfigAnnotation, "replicationcontrollers/test-rc", corev1.LastAppliedConfigAnnotation, "kubectl")
 	if errBuf.String() != expectWarning {
 		t.Fatalf("unexpected non-warning: %s\nexpected: %s", errBuf.String(), expectWarning)
 	}
@@ -1409,4 +1410,51 @@ func TestDontAllowForceApplyWithServerDryRun(t *testing.T) {
 	cmd.Run(cmd, []string{})
 
 	t.Fatalf(`expected error "%s"`, expectedError)
+}
+
+func TestDontAllowForceApplyWithServerSide(t *testing.T) {
+	expectedError := "error: --force cannot be used with --server-side"
+
+	cmdutil.BehaviorOnFatal(func(str string, code int) {
+		panic(str)
+	})
+	defer func() {
+		actualError := recover()
+		if expectedError != actualError {
+			t.Fatalf(`expected error "%s", but got "%s"`, expectedError, actualError)
+		}
+	}()
+
+	tf := cmdtesting.NewTestFactory().WithNamespace("test")
+	defer tf.Cleanup()
+
+	tf.ClientConfigVal = cmdtesting.DefaultClientConfig()
+
+	ioStreams, _, _, _ := genericclioptions.NewTestIOStreams()
+	cmd := NewCmdApply("kubectl", tf, ioStreams)
+	cmd.Flags().Set("filename", filenameRC)
+	cmd.Flags().Set("server-side", "true")
+	cmd.Flags().Set("force", "true")
+	cmd.Run(cmd, []string{})
+
+	t.Fatalf(`expected error "%s"`, expectedError)
+}
+
+func TestDontAllowApplyWithPodGeneratedName(t *testing.T) {
+	expectedError := "error: from testing-: cannot use generate name with apply"
+	cmdutil.BehaviorOnFatal(func(str string, code int) {
+		if str != expectedError {
+			t.Fatalf(`expected error "%s", but got "%s"`, expectedError, str)
+		}
+	})
+
+	tf := cmdtesting.NewTestFactory().WithNamespace("test")
+	defer tf.Cleanup()
+	tf.ClientConfigVal = cmdtesting.DefaultClientConfig()
+
+	ioStreams, _, _, _ := genericclioptions.NewTestIOStreams()
+	cmd := NewCmdApply("kubectl", tf, ioStreams)
+	cmd.Flags().Set("filename", filenamePodGeneratedName)
+	cmd.Flags().Set("dry-run", "client")
+	cmd.Run(cmd, []string{})
 }

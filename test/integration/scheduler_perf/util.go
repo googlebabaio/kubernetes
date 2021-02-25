@@ -17,11 +17,13 @@ limitations under the License.
 package benchmark
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
 	"math"
+	"os"
 	"path"
 	"sort"
 	"time"
@@ -133,6 +135,10 @@ func dataItems2JSONFile(dataItems DataItems, namePrefix string) error {
 
 	destFile := fmt.Sprintf("%v_%v.json", namePrefix, time.Now().Format(dateFormat))
 	if *dataItemsDir != "" {
+		// Ensure the "dataItemsDir" path to be valid.
+		if err := os.MkdirAll(*dataItemsDir, 0750); err != nil {
+			return fmt.Errorf("dataItemsDir path %v does not exist and cannot be created: %v", *dataItemsDir, err)
+		}
 		destFile = path.Join(*dataItemsDir, destFile)
 	}
 
@@ -147,18 +153,18 @@ type metricsCollectorConfig struct {
 // metricsCollector collects metrics from legacyregistry.DefaultGatherer.Gather() endpoint.
 // Currently only Histrogram metrics are supported.
 type metricsCollector struct {
-	metricsCollectorConfig
+	*metricsCollectorConfig
 	labels map[string]string
 }
 
-func newMetricsCollector(config metricsCollectorConfig, labels map[string]string) *metricsCollector {
+func newMetricsCollector(config *metricsCollectorConfig, labels map[string]string) *metricsCollector {
 	return &metricsCollector{
 		metricsCollectorConfig: config,
 		labels:                 labels,
 	}
 }
 
-func (*metricsCollector) run(stopCh chan struct{}) {
+func (*metricsCollector) run(ctx context.Context) {
 	// metricCollector doesn't need to start before the tests, so nothing to do here.
 }
 
@@ -179,7 +185,10 @@ func collectHistogram(metric string, labels map[string]string) *DataItem {
 		klog.Error(err)
 		return nil
 	}
-
+	if hist.Histogram == nil {
+		klog.Errorf("metric %q is not a Histogram metric", metric)
+		return nil
+	}
 	if err := hist.Validate(); err != nil {
 		klog.Error(err)
 		return nil
@@ -228,17 +237,19 @@ func newThroughputCollector(podInformer coreinformers.PodInformer, labels map[st
 	}
 }
 
-func (tc *throughputCollector) run(stopCh chan struct{}) {
+func (tc *throughputCollector) run(ctx context.Context) {
 	podsScheduled, err := getScheduledPods(tc.podInformer, tc.namespaces...)
 	if err != nil {
 		klog.Fatalf("%v", err)
 	}
 	lastScheduledCount := len(podsScheduled)
+	ticker := time.NewTicker(throughputSampleFrequency)
+	defer ticker.Stop()
 	for {
 		select {
-		case <-stopCh:
+		case <-ctx.Done():
 			return
-		case <-time.After(throughputSampleFrequency):
+		case <-ticker.C:
 			podsScheduled, err := getScheduledPods(tc.podInformer, tc.namespaces...)
 			if err != nil {
 				klog.Fatalf("%v", err)

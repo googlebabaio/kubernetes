@@ -23,7 +23,7 @@ import (
 
 	fuzz "github.com/google/gofuzz"
 
-	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -83,10 +83,10 @@ var Funcs = func(codecs runtimeserializer.CodecFactory) []interface{} {
 				s.Affinity = new(core.Affinity)
 			}
 			if s.SchedulerName == "" {
-				s.SchedulerName = core.DefaultSchedulerName
+				s.SchedulerName = v1.DefaultSchedulerName
 			}
 			if s.EnableServiceLinks == nil {
-				enableServiceLinks := corev1.DefaultEnableServiceLinks
+				enableServiceLinks := v1.DefaultEnableServiceLinks
 				s.EnableServiceLinks = &enableServiceLinks
 			}
 		},
@@ -263,6 +263,14 @@ var Funcs = func(codecs runtimeserializer.CodecFactory) []interface{} {
 				i.ISCSIInterface = "default"
 			}
 		},
+		func(i *core.PersistentVolumeClaimSpec, c fuzz.Continue) {
+			// Match defaulting in pkg/apis/core/v1/defaults.go.
+			volumeMode := core.PersistentVolumeMode(c.RandString())
+			if volumeMode == "" {
+				volumeMode = core.PersistentVolumeFilesystem
+			}
+			i.VolumeMode = &volumeMode
+		},
 		func(d *core.DNSPolicy, c fuzz.Continue) {
 			policies := []core.DNSPolicy{core.DNSClusterFirst, core.DNSDefault}
 			*d = policies[c.Rand.Intn(len(policies))]
@@ -292,6 +300,11 @@ var Funcs = func(codecs runtimeserializer.CodecFactory) []interface{} {
 			c.FuzzNoCustom(ct)                                          // fuzz self without calling this function again
 			ct.TerminationMessagePath = "/" + ct.TerminationMessagePath // Must be non-empty
 			ct.TerminationMessagePolicy = "File"
+		},
+		func(ep *core.EphemeralContainer, c fuzz.Continue) {
+			c.FuzzNoCustom(ep)                                                                   // fuzz self without calling this function again
+			ep.EphemeralContainerCommon.TerminationMessagePath = "/" + ep.TerminationMessagePath // Must be non-empty
+			ep.EphemeralContainerCommon.TerminationMessagePolicy = "File"
 		},
 		func(p *core.Probe, c fuzz.Continue) {
 			c.FuzzNoCustom(p)

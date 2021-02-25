@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"crypto/tls"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"net"
 	"net/http"
@@ -330,13 +331,13 @@ func TestConnectWithRedirects(t *testing.T) {
 		redirects:   []string{"/1", "/2", "/3", "/4", "/5", "/6", "/7", "/8", "/9", "/10"},
 		expectError: true,
 	}, {
-		desc:              "redirect to different host are prevented",
-		redirects:         []string{"http://example.com/foo"},
-		expectedRedirects: 0,
+		desc:        "redirect to different host are prevented",
+		redirects:   []string{"http://example.com/foo"},
+		expectError: true,
 	}, {
-		desc:              "multiple redirect to different host forbidden",
-		redirects:         []string{"/1", "/2", "/3", "http://example.com/foo"},
-		expectedRedirects: 3,
+		desc:        "multiple redirect to different host forbidden",
+		redirects:   []string{"/1", "/2", "/3", "http://example.com/foo"},
+		expectError: true,
 	}, {
 		desc:              "redirect to different port is allowed",
 		redirects:         []string{"http://HOST/foo"},
@@ -427,7 +428,7 @@ func TestConnectWithRedirects(t *testing.T) {
 			require.NoError(t, err, "unexpected request error")
 
 			result, err := ioutil.ReadAll(resp.Body)
-			assert.Nil(t, err)
+			assert.NoError(t, err)
 			require.NoError(t, resp.Body.Close())
 			if test.expectedRedirects < len(test.redirects) {
 				// Expect the last redirect to be returned.
@@ -1006,5 +1007,121 @@ func TestParseWarningHeaders(t *testing.T) {
 				t.Errorf("ParseWarningHeaders() got %#v, want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestIsProbableEOF(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		expected bool
+	}{
+		{
+			name:     "with no error",
+			expected: false,
+		},
+		{
+			name:     "with EOF error",
+			err:      io.EOF,
+			expected: true,
+		},
+		{
+			name:     "with unexpected EOF error",
+			err:      io.ErrUnexpectedEOF,
+			expected: true,
+		},
+		{
+			name:     "with broken connection error",
+			err:      fmt.Errorf("http: can't write HTTP request on broken connection"),
+			expected: true,
+		},
+		{
+			name:     "with server sent GOAWAY error",
+			err:      fmt.Errorf("error foo - http2: server sent GOAWAY and closed the connection - error bar"),
+			expected: true,
+		},
+		{
+			name:     "with connection reset by peer error",
+			err:      fmt.Errorf("error foo - connection reset by peer - error bar"),
+			expected: true,
+		},
+		{
+			name:     "with use of closed network connection error",
+			err:      fmt.Errorf("error foo - Use of closed network connection - error bar"),
+			expected: true,
+		},
+		{
+			name: "with url error",
+			err: &url.Error{
+				Err: io.ErrUnexpectedEOF,
+			},
+			expected: true,
+		},
+		{
+			name:     "with unrecognized error",
+			err:      fmt.Errorf("error foo"),
+			expected: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			actual := IsProbableEOF(test.err)
+			assert.Equal(t, test.expected, actual)
+		})
+	}
+}
+
+func setEnv(key, value string) func() {
+	originalValue := os.Getenv(key)
+	os.Setenv(key, value)
+	return func() {
+		os.Setenv(key, originalValue)
+	}
+}
+
+func TestReadIdleTimeoutSeconds(t *testing.T) {
+	reset := setEnv("HTTP2_READ_IDLE_TIMEOUT_SECONDS", "60")
+	if e, a := 60, readIdleTimeoutSeconds(); e != a {
+		t.Errorf("expected %d, got %d", e, a)
+	}
+	reset()
+
+	reset = setEnv("HTTP2_READ_IDLE_TIMEOUT_SECONDS", "illegal value")
+	if e, a := 30, readIdleTimeoutSeconds(); e != a {
+		t.Errorf("expected %d, got %d", e, a)
+	}
+	reset()
+}
+
+func TestPingTimeoutSeconds(t *testing.T) {
+	reset := setEnv("HTTP2_PING_TIMEOUT_SECONDS", "60")
+	if e, a := 60, pingTimeoutSeconds(); e != a {
+		t.Errorf("expected %d, got %d", e, a)
+	}
+	reset()
+
+	reset = setEnv("HTTP2_PING_TIMEOUT_SECONDS", "illegal value")
+	if e, a := 15, pingTimeoutSeconds(); e != a {
+		t.Errorf("expected %d, got %d", e, a)
+	}
+	reset()
+}
+
+func Benchmark_ParseQuotedString(b *testing.B) {
+	str := `"The quick brown" fox jumps over the lazy dog`
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		quoted, remainder, err := parseQuotedString(str)
+		if err != nil {
+			b.Errorf("Unexpected error %s", err)
+		}
+		if quoted != "The quick brown" {
+			b.Errorf("Unexpected quoted string %s", quoted)
+		}
+		if remainder != "fox jumps over the lazy dog" {
+			b.Errorf("Unexpected remainder string %s", quoted)
+		}
 	}
 }

@@ -55,29 +55,6 @@ const (
 	// should be changed appropriately.
 	minRetryDelay = 5 * time.Second
 	maxRetryDelay = 300 * time.Second
-
-	// labelNodeRoleMaster specifies that a node is a master. The use of this label within the
-	// controller is deprecated and only considered when the LegacyNodeRoleBehavior feature gate
-	// is on.
-	labelNodeRoleMaster = "node-role.kubernetes.io/master"
-
-	// labelNodeRoleExcludeBalancer specifies that the node should not be considered as a target
-	// for external load-balancers which use nodes as a second hop (e.g. many cloud LBs which only
-	// understand nodes). For services that use externalTrafficPolicy=Local, this may mean that
-	// any backends on excluded nodes are not reachable by those external load-balancers.
-	// Implementations of this exclusion may vary based on provider. This label is honored starting
-	// in 1.16 when the ServiceNodeExclusion gate is on.
-	labelNodeRoleExcludeBalancer = "node.kubernetes.io/exclude-from-external-load-balancers"
-
-	// serviceNodeExclusionFeature is the feature gate name that
-	// enables nodes to exclude themselves from service load balancers
-	// originated from: https://github.com/kubernetes/kubernetes/blob/28e800245e/pkg/features/kube_features.go#L178
-	serviceNodeExclusionFeature = "ServiceNodeExclusion"
-
-	// legacyNodeRoleBehaviorFeature is the feature gate name that enables legacy
-	// behavior to vary cluster functionality on the node-role.kubernetes.io
-	// labels.
-	legacyNodeRoleBehaviorFeature = "LegacyNodeRoleBehavior"
 )
 
 type cachedService struct {
@@ -110,9 +87,6 @@ type Controller struct {
 	nodeListerSynced    cache.InformerSynced
 	// services that need to be synced
 	queue workqueue.RateLimitingInterface
-	// feature gates stored in local field for better testability
-	legacyNodeRoleFeatureEnabled       bool
-	serviceNodeExclusionFeatureEnabled bool
 }
 
 // New returns a new service controller to keep cloud provider service resources
@@ -126,29 +100,28 @@ func New(
 	featureGate featuregate.FeatureGate,
 ) (*Controller, error) {
 	broadcaster := record.NewBroadcaster()
-	broadcaster.StartLogging(klog.Infof)
+	broadcaster.StartStructuredLogging(0)
 	broadcaster.StartRecordingToSink(&v1core.EventSinkImpl{Interface: kubeClient.CoreV1().Events("")})
 	recorder := broadcaster.NewRecorder(scheme.Scheme, v1.EventSource{Component: "service-controller"})
 
 	if kubeClient != nil && kubeClient.CoreV1().RESTClient().GetRateLimiter() != nil {
-		if err := ratelimiter.RegisterMetricAndTrackRateLimiterUsage("service_controller", kubeClient.CoreV1().RESTClient().GetRateLimiter()); err != nil {
+		if err := ratelimiter.RegisterMetricAndTrackRateLimiterUsage(subSystemName, kubeClient.CoreV1().RESTClient().GetRateLimiter()); err != nil {
 			return nil, err
 		}
 	}
 
+	registerMetrics()
 	s := &Controller{
-		cloud:                              cloud,
-		knownHosts:                         []*v1.Node{},
-		kubeClient:                         kubeClient,
-		clusterName:                        clusterName,
-		cache:                              &serviceCache{serviceMap: make(map[string]*cachedService)},
-		eventBroadcaster:                   broadcaster,
-		eventRecorder:                      recorder,
-		nodeLister:                         nodeInformer.Lister(),
-		nodeListerSynced:                   nodeInformer.Informer().HasSynced,
-		queue:                              workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "service"),
-		legacyNodeRoleFeatureEnabled:       featureGate.Enabled(legacyNodeRoleBehaviorFeature),
-		serviceNodeExclusionFeatureEnabled: featureGate.Enabled(serviceNodeExclusionFeature),
+		cloud:            cloud,
+		knownHosts:       []*v1.Node{},
+		kubeClient:       kubeClient,
+		clusterName:      clusterName,
+		cache:            &serviceCache{serviceMap: make(map[string]*cachedService)},
+		eventBroadcaster: broadcaster,
+		eventRecorder:    recorder,
+		nodeLister:       nodeInformer.Lister(),
+		nodeListerSynced: nodeInformer.Informer().HasSynced,
+		queue:            workqueue.NewNamedRateLimitingQueue(workqueue.NewItemExponentialFailureRateLimiter(minRetryDelay, maxRetryDelay), "service"),
 	}
 
 	serviceInformer.Informer().AddEventHandlerWithResyncPeriod(
@@ -635,17 +608,8 @@ func nodeSlicesEqualForLB(x, y []*v1.Node) bool {
 
 func (s *Controller) getNodeConditionPredicate() NodeConditionPredicate {
 	return func(node *v1.Node) bool {
-		if s.legacyNodeRoleFeatureEnabled {
-			// As of 1.6, we will taint the master, but not necessarily mark it unschedulable.
-			// Recognize nodes labeled as master, and filter them also, as we were doing previously.
-			if _, hasMasterRoleLabel := node.Labels[labelNodeRoleMaster]; hasMasterRoleLabel {
-				return false
-			}
-		}
-		if s.serviceNodeExclusionFeatureEnabled {
-			if _, hasExcludeBalancerLabel := node.Labels[labelNodeRoleExcludeBalancer]; hasExcludeBalancerLabel {
-				return false
-			}
+		if _, hasExcludeBalancerLabel := node.Labels[v1.LabelNodeExcludeBalancers]; hasExcludeBalancerLabel {
+			return false
 		}
 
 		// If we have no info, don't accept
@@ -693,6 +657,13 @@ func nodeReadyConditionStatus(node *v1.Node) v1.ConditionStatus {
 func (s *Controller) nodeSyncLoop() {
 	s.knownHostsLock.Lock()
 	defer s.knownHostsLock.Unlock()
+	startTime := time.Now()
+	defer func() {
+		latency := time.Now().Sub(startTime).Seconds()
+		klog.V(4).Infof("It took %v seconds to finish nodeSyncLoop", latency)
+		nodeSyncLatency.Observe(latency)
+	}()
+
 	newHosts, err := listWithPredicate(s.nodeLister, s.getNodeConditionPredicate())
 	if err != nil {
 		runtime.HandleError(fmt.Errorf("Failed to retrieve current set of nodes from node lister: %v", err))
@@ -743,6 +714,12 @@ func (s *Controller) lockedUpdateLoadBalancerHosts(service *v1.Service, hosts []
 	if !wantsLoadBalancer(service) {
 		return nil
 	}
+	startTime := time.Now()
+	defer func() {
+		latency := time.Now().Sub(startTime).Seconds()
+		klog.V(4).Infof("It took %v seconds to update load balancer hosts for service %s/%s", latency, service.Namespace, service.Name)
+		updateLoadBalancerHostLatency.Observe(latency)
+	}()
 
 	// This operation doesn't normally take very long (and happens pretty often), so we only record the final event
 	err := s.balancer.UpdateLoadBalancer(context.TODO(), s.clusterName, service, hosts)

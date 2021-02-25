@@ -18,6 +18,7 @@ package apply
 
 import (
 	"fmt"
+	"io"
 	"net/http"
 
 	"github.com/spf13/cobra"
@@ -132,7 +133,8 @@ var (
 		# Apply the configuration in manifest.yaml and delete all the other configmaps that are not in the file.
 		kubectl apply --prune -f manifest.yaml --all --prune-whitelist=core/v1/ConfigMap`))
 
-	warningNoLastAppliedConfigAnnotation = "Warning: %[1]s apply should be used on resource created by either %[1]s create --save-config or %[1]s apply\n"
+	warningNoLastAppliedConfigAnnotation = "Warning: resource %[1]s is missing the %[2]s annotation which is required by %[3]s apply. %[3]s apply should only be used on resources created declaratively by either %[3]s create --save-config or %[3]s apply. The missing annotation will be patched automatically.\n"
+	warningChangesOnDeletingResource     = "Warning: Detected changes to resource %[1]s which is currently being deleted.\n"
 )
 
 // NewApplyOptions creates new ApplyOptions for the `apply` command
@@ -244,10 +246,18 @@ func (o *ApplyOptions) Complete(f cmdutil.Factory, cmd *cobra.Command) error {
 		return err
 	}
 
-	o.DeleteOptions = o.DeleteFlags.ToOptions(o.DynamicClient, o.IOStreams)
+	o.DeleteOptions, err = o.DeleteFlags.ToOptions(o.DynamicClient, o.IOStreams)
+	if err != nil {
+		return err
+	}
+
 	err = o.DeleteOptions.FilenameOptions.RequireFilenameOrKustomize()
 	if err != nil {
 		return err
+	}
+
+	if o.ServerSideApply && o.DeleteOptions.ForceDeletion {
+		return fmt.Errorf("--force cannot be used with --server-side")
 	}
 
 	if o.DryRunStrategy == cmdutil.DryRunServer && o.DeleteOptions.ForceDeletion {
@@ -399,6 +409,14 @@ func (o *ApplyOptions) applyOneObject(info *resource.Info) error {
 		klog.V(4).Infof("error recording current command: %v", err)
 	}
 
+	if len(info.Name) == 0 {
+		metadata, _ := meta.Accessor(info.Object)
+		generatedName := metadata.GetGenerateName()
+		if len(generatedName) > 0 {
+			return fmt.Errorf("from %s: cannot use generate name with apply", generatedName)
+		}
+	}
+
 	helper := resource.NewHelper(info.Client, info.Mapping).
 		DryRun(o.DryRunStrategy == cmdutil.DryRunServer).
 		WithFieldManager(o.FieldManager)
@@ -446,12 +464,14 @@ are the ways you can resolve this warning:
 * You may co-own fields by updating your manifest to match the existing
   value; in this case, you'll become the manager if the other manager(s)
   stop managing the field (remove it from their configuration).
-See http://k8s.io/docs/reference/using-api/api-concepts/#conflicts`, err)
+See http://k8s.io/docs/reference/using-api/server-side-apply/#conflicts`, err)
 			}
 			return err
 		}
 
 		info.Refresh(obj, true)
+
+		WarnIfDeleting(info.Object, o.ErrOut)
 
 		if err := o.MarkObjectVisited(info); err != nil {
 			return err
@@ -526,7 +546,7 @@ See http://k8s.io/docs/reference/using-api/api-concepts/#conflicts`, err)
 		metadata, _ := meta.Accessor(info.Object)
 		annotationMap := metadata.GetAnnotations()
 		if _, ok := annotationMap[corev1.LastAppliedConfigAnnotation]; !ok {
-			fmt.Fprintf(o.ErrOut, warningNoLastAppliedConfigAnnotation, o.cmdBaseName)
+			fmt.Fprintf(o.ErrOut, warningNoLastAppliedConfigAnnotation, info.ObjectName(), corev1.LastAppliedConfigAnnotation, o.cmdBaseName)
 		}
 
 		patcher, err := newPatcher(o, info, helper)
@@ -539,6 +559,8 @@ See http://k8s.io/docs/reference/using-api/api-concepts/#conflicts`, err)
 		}
 
 		info.Refresh(patchedObject, true)
+
+		WarnIfDeleting(info.Object, o.ErrOut)
 
 		if string(patchBytes) == "{}" && !o.shouldPrintObject() {
 			printer, err := o.ToPrinter("unchanged")
@@ -630,7 +652,7 @@ func (o *ApplyOptions) MarkNamespaceVisited(info *resource.Info) {
 	}
 }
 
-// MarkNamespaceVisited keeps track of UIDs of the applied
+// MarkObjectVisited keeps track of UIDs of the applied
 // objects. Used for pruning.
 func (o *ApplyOptions) MarkObjectVisited(info *resource.Info) error {
 	metadata, err := meta.Accessor(info.Object)
@@ -641,7 +663,7 @@ func (o *ApplyOptions) MarkObjectVisited(info *resource.Info) error {
 	return nil
 }
 
-// PrintAndPrune returns a function which meets the PostProcessorFn
+// PrintAndPrunePostProcessor returns a function which meets the PostProcessorFn
 // function signature. This returned function prints all the
 // objects as a list (if configured for that), and prunes the
 // objects not applied. The returned function is the standard
@@ -691,4 +713,13 @@ func GetApplyFieldManagerFlag(cmd *cobra.Command, serverSide bool) string {
 	}
 
 	return FieldManagerClientSideApply
+}
+
+// WarnIfDeleting prints a warning if a resource is being deleted
+func WarnIfDeleting(obj runtime.Object, stderr io.Writer) {
+	metadata, _ := meta.Accessor(obj)
+	if metadata != nil && metadata.GetDeletionTimestamp() != nil {
+		// just warn the user about the conflict
+		fmt.Fprintf(stderr, warningChangesOnDeletingResource, metadata.GetName())
+	}
 }

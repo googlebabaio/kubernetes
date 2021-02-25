@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	api "k8s.io/api/core/v1"
 	v1 "k8s.io/api/core/v1"
@@ -62,14 +63,27 @@ func newTestPlugin(t *testing.T, client *fakeclient.Clientset) (*csiPlugin, stri
 	factory := informers.NewSharedInformerFactory(client, CsiResyncPeriod)
 	csiDriverInformer := factory.Storage().V1().CSIDrivers()
 	csiDriverLister := csiDriverInformer.Lister()
-	go factory.Start(wait.NeverStop)
+	volumeAttachmentInformer := factory.Storage().V1().VolumeAttachments()
+	volumeAttachmentLister := volumeAttachmentInformer.Lister()
 
-	host := volumetest.NewFakeVolumeHostWithCSINodeName(t,
+	factory.Start(wait.NeverStop)
+	syncedTypes := factory.WaitForCacheSync(wait.NeverStop)
+	if len(syncedTypes) != 2 {
+		t.Fatalf("informers are not synced")
+	}
+	for ty, ok := range syncedTypes {
+		if !ok {
+			t.Fatalf("failed to sync: %#v", ty)
+		}
+	}
+
+	host := volumetest.NewFakeKubeletVolumeHostWithCSINodeName(t,
 		tmpDir,
 		client,
 		ProbeVolumePlugins(),
 		"fakeNode",
 		csiDriverLister,
+		volumeAttachmentLister,
 	)
 
 	pluginMgr := host.GetPluginMgr()
@@ -82,11 +96,6 @@ func newTestPlugin(t *testing.T, client *fakeclient.Clientset) (*csiPlugin, stri
 	if !ok {
 		t.Fatalf("cannot assert plugin to be type csiPlugin")
 	}
-
-	// Wait until the informer in CSI volume plugin has all CSIDrivers.
-	wait.PollImmediate(TestInformerSyncPeriod, TestInformerSyncTimeout, func() (bool, error) {
-		return csiDriverInformer.Informer().HasSynced(), nil
-	})
 
 	return csiPlug, tmpDir
 }
@@ -105,8 +114,6 @@ func registerFakePlugin(pluginName, endpoint string, versions []string, t *testi
 }
 
 func TestPluginGetPluginName(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIBlockVolume, true)()
-
 	plug, tmpDir := newTestPlugin(t, nil)
 	defer os.RemoveAll(tmpDir)
 	if plug.GetPluginName() != "kubernetes.io/csi" {
@@ -115,8 +122,6 @@ func TestPluginGetPluginName(t *testing.T) {
 }
 
 func TestPluginGetVolumeName(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIBlockVolume, true)()
-
 	plug, tmpDir := newTestPlugin(t, nil)
 	defer os.RemoveAll(tmpDir)
 	testCases := []struct {
@@ -181,7 +186,6 @@ func TestPluginGetVolumeName(t *testing.T) {
 }
 
 func TestPluginGetVolumeNameWithInline(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIBlockVolume, true)()
 	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIInlineVolume, true)()
 
 	modes := []storagev1.VolumeLifecycleMode{
@@ -235,7 +239,6 @@ func TestPluginGetVolumeNameWithInline(t *testing.T) {
 }
 
 func TestPluginCanSupport(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIBlockVolume, true)()
 	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIInlineVolume, false)()
 
 	tests := []struct {
@@ -275,7 +278,6 @@ func TestPluginCanSupport(t *testing.T) {
 }
 
 func TestPluginCanSupportWithInline(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIBlockVolume, true)()
 	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIInlineVolume, true)()
 
 	tests := []struct {
@@ -315,8 +317,6 @@ func TestPluginCanSupportWithInline(t *testing.T) {
 }
 
 func TestPluginConstructVolumeSpec(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIBlockVolume, true)()
-
 	plug, tmpDir := newTestPlugin(t, nil)
 	defer os.RemoveAll(tmpDir)
 
@@ -412,7 +412,6 @@ func TestPluginConstructVolumeSpec(t *testing.T) {
 }
 
 func TestPluginConstructVolumeSpecWithInline(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIBlockVolume, true)()
 	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIInlineVolume, true)()
 
 	testCases := []struct {
@@ -553,8 +552,6 @@ func TestPluginConstructVolumeSpecWithInline(t *testing.T) {
 }
 
 func TestPluginNewMounter(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIBlockVolume, true)()
-
 	tests := []struct {
 		name                string
 		spec                *volume.Spec
@@ -666,7 +663,6 @@ func TestPluginNewMounter(t *testing.T) {
 }
 
 func TestPluginNewMounterWithInline(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIBlockVolume, true)()
 	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIInlineVolume, true)()
 	bothModes := []storagev1.VolumeLifecycleMode{
 		storagev1.VolumeLifecycleEphemeral,
@@ -816,8 +812,6 @@ func TestPluginNewMounterWithInline(t *testing.T) {
 }
 
 func TestPluginNewUnmounter(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIBlockVolume, true)()
-
 	plug, tmpDir := newTestPlugin(t, nil)
 	defer os.RemoveAll(tmpDir)
 
@@ -865,8 +859,6 @@ func TestPluginNewUnmounter(t *testing.T) {
 }
 
 func TestPluginNewAttacher(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIBlockVolume, true)()
-
 	plug, tmpDir := newTestPlugin(t, nil)
 	defer os.RemoveAll(tmpDir)
 
@@ -875,18 +867,19 @@ func TestPluginNewAttacher(t *testing.T) {
 		t.Fatalf("failed to create new attacher: %v", err)
 	}
 
-	csiAttacher := attacher.(*csiAttacher)
+	csiAttacher := getCsiAttacherFromVolumeAttacher(attacher)
 	if csiAttacher.plugin == nil {
 		t.Error("plugin not set for attacher")
 	}
 	if csiAttacher.k8s == nil {
 		t.Error("Kubernetes client not set for attacher")
 	}
+	if csiAttacher.watchTimeout == time.Duration(0) {
+		t.Error("watch timeout not set for attacher")
+	}
 }
 
 func TestPluginNewDetacher(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIBlockVolume, true)()
-
 	plug, tmpDir := newTestPlugin(t, nil)
 	defer os.RemoveAll(tmpDir)
 
@@ -895,12 +888,15 @@ func TestPluginNewDetacher(t *testing.T) {
 		t.Fatalf("failed to create new detacher: %v", err)
 	}
 
-	csiDetacher := detacher.(*csiAttacher)
+	csiDetacher := getCsiAttacherFromVolumeDetacher(detacher)
 	if csiDetacher.plugin == nil {
 		t.Error("plugin not set for detacher")
 	}
 	if csiDetacher.k8s == nil {
 		t.Error("Kubernetes client not set for detacher")
+	}
+	if csiDetacher.watchTimeout == time.Duration(0) {
+		t.Error("watch timeout not set for detacher")
 	}
 }
 
@@ -1012,12 +1008,13 @@ func TestPluginFindAttachablePlugin(t *testing.T) {
 				},
 			)
 			factory := informers.NewSharedInformerFactory(client, CsiResyncPeriod)
-			host := volumetest.NewFakeVolumeHostWithCSINodeName(t,
+			host := volumetest.NewFakeKubeletVolumeHostWithCSINodeName(t,
 				tmpDir,
 				client,
 				ProbeVolumePlugins(),
 				"fakeNode",
 				factory.Storage().V1().CSIDrivers().Lister(),
+				factory.Storage().V1().VolumeAttachments().Lister(),
 			)
 
 			plugMgr := host.GetPluginMgr()
@@ -1137,7 +1134,7 @@ func TestPluginFindDeviceMountablePluginBySpec(t *testing.T) {
 					Spec: v1.NodeSpec{},
 				},
 			)
-			host := volumetest.NewFakeVolumeHostWithCSINodeName(t, tmpDir, client, ProbeVolumePlugins(), "fakeNode", nil)
+			host := volumetest.NewFakeVolumeHostWithCSINodeName(t, tmpDir, client, ProbeVolumePlugins(), "fakeNode", nil, nil)
 			plugMgr := host.GetPluginMgr()
 			plug, err := plugMgr.FindDeviceMountablePluginBySpec(test.spec)
 			if err != nil && !test.shouldFail {
@@ -1151,8 +1148,6 @@ func TestPluginFindDeviceMountablePluginBySpec(t *testing.T) {
 }
 
 func TestPluginNewBlockMapper(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIBlockVolume, true)()
-
 	plug, tmpDir := newTestPlugin(t, nil)
 	defer os.RemoveAll(tmpDir)
 
@@ -1200,8 +1195,6 @@ func TestPluginNewBlockMapper(t *testing.T) {
 }
 
 func TestPluginNewUnmapper(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIBlockVolume, true)()
-
 	plug, tmpDir := newTestPlugin(t, nil)
 	defer os.RemoveAll(tmpDir)
 
@@ -1261,8 +1254,6 @@ func TestPluginNewUnmapper(t *testing.T) {
 }
 
 func TestPluginConstructBlockVolumeSpec(t *testing.T) {
-	defer featuregatetesting.SetFeatureGateDuringTest(t, utilfeature.DefaultFeatureGate, features.CSIBlockVolume, true)()
-
 	plug, tmpDir := newTestPlugin(t, nil)
 	defer os.RemoveAll(tmpDir)
 

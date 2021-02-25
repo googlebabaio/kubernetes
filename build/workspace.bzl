@@ -17,32 +17,32 @@ load("//build:workspace_mirror.bzl", "mirror")
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive", "http_file")
 load("@io_bazel_rules_docker//container:container.bzl", "container_pull")
 
-CNI_VERSION = "0.8.6"
+CNI_VERSION = "0.8.7"
 _CNI_TARBALL_ARCH_SHA256 = {
-    "amd64": "994fbfcdbb2eedcfa87e48d8edb9bb365f4e2747a7e47658482556c12fd9b2f5",
-    "arm": "28e61b5847265135dc1ca397bf94322ecce4acab5c79cc7d360ca3f6a655bdb7",
-    "arm64": "43fbf750c5eccb10accffeeb092693c32b236fb25d919cf058c91a677822c999",
-    "ppc64le": "61d6c6c15d3e4fa3eb85d128c9c0ff2658f38e59047ae359be47d193c673e116",
-    "s390x": "ca126a3bd2cd8dff1c7bbfc3c69933b284c4e77614391c7e1f74b0851fc3b289",
+    "amd64": "977824932d5667c7a37aa6a3cbba40100a6873e7bd97e83e8be837e3e7afd0a8",
+    "arm": "5757778f4c322ffd93d7586c60037b81a2eb79271af6f4edf9ff62b4f7868ed9",
+    "arm64": "ae13d7b5c05bd180ea9b5b68f44bdaa7bfb41034a2ef1d68fd8e1259797d642f",
+    "ppc64le": "70a8c5448ed03a3b27c6a89499a05285760a45252ec7eae4190c70ba5400d4ba",
+    "s390x": "3a0008f98ea5b4b6fd367cac3d8096f19bc080a779cf81fd0bcbc5bd1396ace7",
 }
 
-CRI_TOOLS_VERSION = "1.18.0"
+CRI_TOOLS_VERSION = "1.20.0"
 _CRI_TARBALL_ARCH_SHA256 = {
-    "linux-386": "a1aaf482928d0a19aabeb321e406333c5ddecf77a532f7ec8c0bd6ca7014101e",
-    "linux-amd64": "876dd2b3d0d1c2590371f940fb1bf1fbd5f15aebfbe456703ee465d959700f4a",
-    "linux-arm": "d420925d10b47a234b7e51e9cf1039c3c09f2703945a99435549fcdd7487ae3a",
-    "linux-arm64": "95ba32c47ad690b1e3e24f60255273dd7d176e62b1a0b482e5b44a7c31639979",
-    "linux-ppc64le": "53a1fedbcee37f5d6c9480d21a9bb17f1c0214ffe7b640e39231a59927a665ef",
-    "linux-s390x": "114c8885a7eeb43bbe19baaf23c04a5761d06330ba8e7aa39a3a15c2051221f1",
-    "windows-386": "f37e8b5c499fb5a2bd06668782a7dc34e5acf2fda6d1bfe8f0ea9c773359a378",
-    "windows-amd64": "5045bcc6d8b0e6004be123ab99ea06e5b1b2ae1e586c968fcdf85fccd4d67ae1",
+    "linux-386": "13ab9493cefca1d1ac5848ed52572e2ee5518a5bf2c527c0e5ed75b0e5c42c39",
+    "linux-amd64": "44d5f550ef3f41f9b53155906e0229ffdbee4b19452b4df540265e29572b899c",
+    "linux-arm": "ed5ffdd386261ec1146731421d4ac9c5c7f91e08486fee409452a3364bef792a",
+    "linux-arm64": "eda6879710eb046d335162d4afe8494c6f8161142ad3188022852f64b92806a8",
+    "linux-ppc64le": "da0c052983ba884f9605b14bf627664df67fcdb41c7f6908368bf4745f889b26",
+    "linux-s390x": "88e1e41502e6f649e1a9dd0392d6ddec1854d6cd9d826b69d092e80d74fc4aca",
+    "windows-386": "b37edede7e4eb11247f5677f4cab1a8bca4ea1bc26a5c6b3ee599adddc01f926",
+    "windows-amd64": "cc909108ee84d39b2e9d7ac0cb9599b6fa7fc51f5a7da7014052684cd3e3f65e",
 }
 
-ETCD_VERSION = "3.4.7"
+ETCD_VERSION = "3.4.13"
 _ETCD_TARBALL_ARCH_SHA256 = {
-    "amd64": "4ad86e663b63feb4855e1f3a647e719d6d79cf6306410c52b7f280fa56f8eb6b",
-    "arm64": "b5bf03629277e2231651ecb3f247bf843a974172208f29b7fc38e3f63f6676fc",
-    "ppc64le": "931631368ee962a37b22754c9a64baba2535207afcbd42efbdacc44fb48398bf",
+    "amd64": "2ac029e47bab752dacdb7b30032f230f49e2f457cbc32e8f555c2210bb5ff107",
+    "arm64": "1934ebb9f9f6501f706111b78e5e321a7ff8d7792d3d96a76e2d01874e42a300",
+    "ppc64le": "fc77c3949b5178373734c3b276eb2281c954c3cd2225ccb05cdbdf721e1f775a",
 }
 
 # Dependencies needed for a Kubernetes "release", e.g. building docker images,
@@ -68,49 +68,49 @@ def cri_tarballs():
             name = "cri_tools_%s" % arch,
             downloaded_file_path = "cri_tools.tgz",
             sha256 = sha,
-            urls = mirror("https://github.com/kubernetes-incubator/cri-tools/releases/download/v%s/crictl-v%s-%s.tar.gz" % (CRI_TOOLS_VERSION, CRI_TOOLS_VERSION, arch)),
+            urls = mirror("https://github.com/kubernetes-sigs/cri-tools/releases/download/v%s/crictl-v%s-%s.tar.gz" % (CRI_TOOLS_VERSION, CRI_TOOLS_VERSION, arch)),
         )
 
 # Use skopeo to find these values: https://github.com/containers/skopeo
 #
 # Example
-# Manifest: skopeo inspect docker://gcr.io/k8s-staging-build-image/debian-base:v2.1.0
-# Arches: skopeo inspect --raw docker://gcr.io/k8s-staging-build-image/debian-base:v2.1.0
+# Manifest: skopeo inspect docker://gcr.io/k8s-staging-build-image/debian-base:buster-v1.4.0
+# Arches: skopeo inspect --raw docker://gcr.io/k8s-staging-build-image/debian-base:buster-v1.4.0
 _DEBIAN_BASE_DIGEST = {
-    "manifest": "sha256:b118abac0bcf633b9db4086584ee718526fe394cf1bd18aee036e6cc497860f6",
-    "amd64": "sha256:a67798e4746faaab3fde5b7407fa8bba75d8b1214d168dc7ad2b5364f6fc4319",
-    "arm": "sha256:3ab4332e481610acbcba7a801711e29506b4bd4ecb38f72590253674d914c449",
-    "arm64": "sha256:8d53ac4da977eb20d6219ee49b9cdff8c066831ecab0e4294d0a02179d26b1d7",
-    "ppc64le": "sha256:a631023e795fe18df7faa8fe1264e757a6c74a232b9a2659657bf65756f3f4aa",
-    "s390x": "sha256:dac908eaa61d2034aec252576a470a7e4ab184c361f89170526f707a0c3c6082",
+    "manifest": "sha256:36652ef8e4dd6715de02e9b68e5c122ed8ee06c75f83f5c574b97301e794c3fb",
+    "amd64": "sha256:afff10fcd513483e492807f8d934bdf0be4a237997f55e0f1f8e34c04a6cb213",
+    "arm": "sha256:27e6e66ea3c4c4ca6dbfc8c949f0c4c870f038f4500fd267c242422a244f233c",
+    "arm64": "sha256:4333a5edc9ce6d6660c76104749c2e50e6158e57c8e5956f732991bb032a8ce1",
+    "ppc64le": "sha256:01a0ba2645883ea8d985460c2913070a90a098056cc6d188122942678923ddb7",
+    "s390x": "sha256:610526b047d4b528d9e14b4f15347aa4e37af0c47e1307a2f7aebf8745c8a323",
 }
 
 # Use skopeo to find these values: https://github.com/containers/skopeo
 #
 # Example
-# Manifest: skopeo inspect docker://gcr.io/k8s-staging-build-image/debian-iptables:v12.1.0
-# Arches: skopeo inspect --raw docker://gcr.io/k8s-staging-build-image/debian-iptables:v12.1.0
+# Manifest: skopeo inspect docker://gcr.io/k8s-staging-build-image/debian-iptables:buster-v1.5.0
+# Arches: skopeo inspect --raw docker://gcr.io/k8s-staging-build-image/debian-iptables:buster-v1.5.0
 _DEBIAN_IPTABLES_DIGEST = {
-    "manifest": "sha256:1ae6d76dea462973759ff1c4e02263867da1f85db9aa10462a030ca421cbf0e9",
-    "amd64": "sha256:2fb9fa09123a41e6369cac04eb29e26237fe9e43da8e18f676d18d8fffb906fc",
-    "arm": "sha256:a0e97386c073a2990265938fa15dc0db575efdb4d13c0ea63a79e0590813a998",
-    "arm64": "sha256:2a7df97e2c702d9852cc6234aff89b4671cd5b09086ac2b5383411315e5f115d",
-    "ppc64le": "sha256:f5289a6494328b7ccb695e3add65b33ca380b77fcfc9715e474f0efe26e1c506",
-    "s390x": "sha256:1b91a2788750552913377bf1bc99a095544dfb523d80a55674003c974c8e0905",
+    "manifest": "sha256:abe8cef9e116f2d5ec1175c386e33841ff3386779138b425af876384b0fd7ccb",
+    "amd64": "sha256:b4b8b1e0d4617011dd03f20b804cc2e50bf48bafc36b1c8c7bd23fd44bfd641e",
+    "arm": "sha256:09f79b3a00268705a8f8462f1528fed536e204905359f21e9965f08dd306c60a",
+    "arm64": "sha256:b4fa11965f34a9f668c424b401c0af22e88f600d22c899699bdb0bd1e6953ad6",
+    "ppc64le": "sha256:0ea0be4dec281b506f6ceef4cb3594cabea8d80e2dc0d93c7eb09d46259dd837",
+    "s390x": "sha256:50ef25fba428b6002ef0a9dea7ceae5045430dc1035d50498a478eefccba17f5",
 }
 
 # Use skopeo to find these values: https://github.com/containers/skopeo
 #
 # Example
-# Manifest: skopeo inspect docker://gcr.io/k8s-staging-build-image/go-runner:v0.1.1
-# Arches: skopeo inspect --raw docker://gcr.io/k8s-staging-build-image/go-runner:v0.1.1
+# Manifest: skopeo inspect docker://gcr.io/k8s-staging-build-image/go-runner:buster-v2.2.4
+# Arches: skopeo inspect --raw docker://gcr.io/k8s-staging-build-image/go-runner:buster-v2.3.1
 _GO_RUNNER_DIGEST = {
-    "manifest": "sha256:4892faa2de0533bc1af72b9b233936f21a9e7362063345d170de1a8f464f2ad8",
-    "amd64": "sha256:821e48a96d46aa53d2f7f5ef9d9093ed69979957a0a7092d1c09c44d81028a9d",
-    "arm": "sha256:2cc042179887b6baa0792e156b53f4cb94181b1a99153790402bd8e517e8cf56",
-    "arm64": "sha256:00ca7f34275349330a5d8ddffd15e2980fe5b2cbdd410f063f4e7617e0e71c29",
-    "ppc64le": "sha256:3e25e0d0e9d17033f3e86d4af5787c7fc5f1173e174d77eebdc14df1a06f1c99",
-    "s390x": "sha256:3e34e290cd35a90285991a575e2e79fddfb161c66f13bc5662a1cc0a4ade32e0",
+    "manifest": "sha256:cd45714e4824eeff6f107d9e3b4f79be9ee0cf5071dc46caf755d3f324a36089",
+    "amd64": "sha256:309379049147b749d2bc63cd8bb2d6c46a68f45fd7fc5fd391d221b42e2c7196",
+    "arm": "sha256:81ad4220d42a19e5e11ccb4b385b404ab287d6417f9b51077ea15df5196d6e75",
+    "arm64": "sha256:93ccd74b2a434e21cd150cf89b10c6fc5e0bf66691ee5c8f22bf1241d168c445",
+    "ppc64le": "sha256:4a7f8dce0f4505e43790fb660b67f4cebad91fae1835c79d0132ba6ecf480701",
+    "s390x": "sha256:e6fa60bd53c8f3706c4d1cd6cd6bc3e95d01b4a924daab004fca9bf403b03e41",
 }
 
 def _digest(d, arch):
@@ -125,29 +125,29 @@ def image_dependencies():
             name = "go-runner-linux-" + arch,
             architecture = arch,
             digest = _digest(_GO_RUNNER_DIGEST, arch),
-            registry = "us.gcr.io/k8s-artifacts-prod/build-image",
+            registry = "k8s.gcr.io/build-image",
             repository = "go-runner",
-            tag = "v0.1.1",  # ignored, but kept here for documentation
+            tag = "buster-v2.3.1",  # ignored, but kept here for documentation
         )
 
         container_pull(
             name = "debian-base-" + arch,
             architecture = arch,
             digest = _digest(_DEBIAN_BASE_DIGEST, arch),
-            registry = "us.gcr.io/k8s-artifacts-prod/build-image",
+            registry = "k8s.gcr.io/build-image",
             repository = "debian-base",
             # Ensure the digests above are updated to match a new tag
-            tag = "v2.1.0",  # ignored, but kept here for documentation
+            tag = "buster-v1.4.0",  # ignored, but kept here for documentation
         )
 
         container_pull(
             name = "debian-iptables-" + arch,
             architecture = arch,
             digest = _digest(_DEBIAN_IPTABLES_DIGEST, arch),
-            registry = "us.gcr.io/k8s-artifacts-prod/build-image",
+            registry = "k8s.gcr.io/build-image",
             repository = "debian-iptables",
             # Ensure the digests above are updated to match a new tag
-            tag = "v12.1.0",  # ignored, but kept here for documentation
+            tag = "buster-v1.5.0",  # ignored, but kept here for documentation
         )
 
 def etcd_tarballs():

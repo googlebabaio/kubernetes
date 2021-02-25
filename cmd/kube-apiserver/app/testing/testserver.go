@@ -34,9 +34,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/apiserver/pkg/registry/generic/registry"
 	"k8s.io/apiserver/pkg/storage/storagebackend"
+	"k8s.io/apiserver/pkg/storageversion"
 	"k8s.io/client-go/kubernetes"
 	restclient "k8s.io/client-go/rest"
 	"k8s.io/client-go/util/cert"
+	"k8s.io/kube-aggregator/pkg/apiserver"
 	"k8s.io/kubernetes/cmd/kube-apiserver/app"
 	"k8s.io/kubernetes/cmd/kube-apiserver/app/options"
 	testutil "k8s.io/kubernetes/test/utils"
@@ -49,9 +51,10 @@ type TearDownFunc func()
 type TestServerInstanceOptions struct {
 	// DisableStorageCleanup Disable the automatic storage cleanup
 	DisableStorageCleanup bool
-
 	// Enable cert-auth for the kube-apiserver
 	EnableCertAuth bool
+	// Wrap the storage version interface of the created server's generic server.
+	StorageVersionWrapFunc func(storageversion.Manager) storageversion.Manager
 }
 
 // TestServer return values supplied by kube-test-ApiServer
@@ -122,7 +125,6 @@ func StartTestServer(t Logger, instanceOptions *TestServerInstanceOptions, custo
 	for _, f := range s.Flags().FlagSets {
 		fs.AddFlagSet(f)
 	}
-	s.InsecureServing.BindPort = 0
 
 	s.SecureServing.Listener, s.SecureServing.BindPort, err = createLocalhostListenerOnFreePort()
 	if err != nil {
@@ -183,6 +185,9 @@ func StartTestServer(t Logger, instanceOptions *TestServerInstanceOptions, custo
 	t.Logf("runtime-config=%v", completedOptions.APIEnablement.RuntimeConfig)
 	t.Logf("Starting kube-apiserver on port %d...", s.SecureServing.BindPort)
 	server, err := app.CreateServerChain(completedOptions, stopCh)
+	if instanceOptions.StorageVersionWrapFunc != nil {
+		server.GenericAPIServer.StorageVersionManager = instanceOptions.StorageVersionWrapFunc(server.GenericAPIServer.StorageVersionManager)
+	}
 	if err != nil {
 		return result, fmt.Errorf("failed to create server chain: %v", err)
 	}
@@ -205,14 +210,23 @@ func StartTestServer(t Logger, instanceOptions *TestServerInstanceOptions, custo
 	}
 
 	// wait until healthz endpoint returns ok
-	err = wait.Poll(100*time.Millisecond, 30*time.Second, func() (bool, error) {
+	err = wait.Poll(100*time.Millisecond, time.Minute, func() (bool, error) {
 		select {
 		case err := <-errCh:
 			return false, err
 		default:
 		}
 
-		result := client.CoreV1().RESTClient().Get().AbsPath("/healthz").Do(context.TODO())
+		req := client.CoreV1().RESTClient().Get().AbsPath("/healthz")
+		// The storage version bootstrap test wraps the storage version post-start
+		// hook, so the hook won't become health when the server bootstraps
+		if instanceOptions.StorageVersionWrapFunc != nil {
+			// We hardcode the param instead of having a new instanceOptions field
+			// to avoid confusing users with more options.
+			storageVersionCheck := fmt.Sprintf("poststarthook/%s", apiserver.StorageVersionPostStartHookName)
+			req.Param("exclude", storageVersionCheck)
+		}
+		result := req.Do(context.TODO())
 		status := 0
 		result.StatusCode(&status)
 		if status == 200 {
