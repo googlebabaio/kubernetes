@@ -300,7 +300,8 @@ type realIPGetter struct {
 // 172.17.0.1 dev docker0  scope host  src 172.17.0.1
 // 192.168.122.1 dev virbr0  scope host  src 192.168.122.1
 // Then filter out dev==kube-ipvs0, and cut the unique src IP fields,
-// Node IP set: [100.106.89.164, 127.0.0.1, 172.17.0.1, 192.168.122.1]
+// Node IP set: [100.106.89.164, 172.17.0.1, 192.168.122.1]
+// Note that loopback addresses are excluded.
 func (r *realIPGetter) NodeIPs() (ips []net.IP, err error) {
 	// Pass in empty filter device name for list all LOCAL type addresses.
 	nodeAddress, err := r.nl.GetLocalAddresses("", DefaultDummyDevice)
@@ -309,7 +310,11 @@ func (r *realIPGetter) NodeIPs() (ips []net.IP, err error) {
 	}
 	// translate ip string to IP
 	for _, ipStr := range nodeAddress.UnsortedList() {
-		ips = append(ips, net.ParseIP(ipStr))
+		a := net.ParseIP(ipStr)
+		if a.IsLoopback() {
+			continue
+		}
+		ips = append(ips, a)
 	}
 	return ips, nil
 }
@@ -321,21 +326,6 @@ func (r *realIPGetter) BindedIPs() (sets.String, error) {
 
 // Proxier implements proxy.Provider
 var _ proxy.Provider = &Proxier{}
-
-// parseExcludedCIDRs parses the input strings and returns net.IPNet
-// The validation has been done earlier so the error condition will never happen under normal conditions
-func parseExcludedCIDRs(excludeCIDRs []string) []*net.IPNet {
-	var cidrExclusions []*net.IPNet
-	for _, excludedCIDR := range excludeCIDRs {
-		_, n, err := net.ParseCIDR(excludedCIDR)
-		if err != nil {
-			klog.Errorf("Error parsing exclude CIDR %q,  err: %v", excludedCIDR, err)
-			continue
-		}
-		cidrExclusions = append(cidrExclusions, n)
-	}
-	return cidrExclusions
-}
 
 // NewProxier returns a new Proxier given an iptables and ipvs Interface instance.
 // Because of the iptables and ipvs logic, it is assumed that there is only a single Proxier active on a machine.
@@ -457,6 +447,9 @@ func NewProxier(ipt utiliptables.Interface,
 		klog.Warningf("IP Family: %s, NodePortAddresses of wrong family; %s", ipFamily, strings.Join(ips, ","))
 	}
 
+	// excludeCIDRs has been validated before, here we just parse it to IPNet list
+	parsedExcludeCIDRs, _ := utilnet.ParseCIDRs(excludeCIDRs)
+
 	proxier := &Proxier{
 		ipFamily:              ipFamily,
 		portsMap:              make(map[utilnet.LocalPort]utilnet.Closeable),
@@ -466,7 +459,7 @@ func NewProxier(ipt utiliptables.Interface,
 		endpointsChanges:      proxy.NewEndpointChangeTracker(hostname, nil, ipFamily, recorder, endpointSlicesEnabled, nil),
 		syncPeriod:            syncPeriod,
 		minSyncPeriod:         minSyncPeriod,
-		excludeCIDRs:          parseExcludedCIDRs(excludeCIDRs),
+		excludeCIDRs:          parsedExcludeCIDRs,
 		iptables:              ipt,
 		masqueradeAll:         masqueradeAll,
 		masqueradeMark:        masqueradeMark,
@@ -1131,6 +1124,10 @@ func (proxier *Proxier) syncProxyRules() {
 		} else {
 			nodeAddresses = nodeAddrSet.List()
 			for _, address := range nodeAddresses {
+				a := net.ParseIP(address)
+				if a.IsLoopback() {
+					continue
+				}
 				if utilproxy.IsZeroCIDR(address) {
 					nodeIPs, err = proxier.ipGetter.NodeIPs()
 					if err != nil {
@@ -1138,7 +1135,7 @@ func (proxier *Proxier) syncProxyRules() {
 					}
 					break
 				}
-				nodeIPs = append(nodeIPs, net.ParseIP(address))
+				nodeIPs = append(nodeIPs, a)
 			}
 		}
 	}
@@ -1236,7 +1233,7 @@ func (proxier *Proxier) syncProxyRules() {
 			activeBindAddrs[serv.Address.String()] = true
 			// ExternalTrafficPolicy only works for NodePort and external LB traffic, does not affect ClusterIP
 			// So we still need clusterIP rules in onlyNodeLocalEndpoints mode.
-			if err := proxier.syncEndpoint(svcName, false, serv); err != nil {
+			if err := proxier.syncEndpoint(svcName, false, svcInfo.NodeLocalInternal(), serv); err != nil {
 				klog.Errorf("Failed to sync endpoint for service: %v, err: %v", serv, err)
 			}
 		} else {
@@ -1263,7 +1260,7 @@ func (proxier *Proxier) syncProxyRules() {
 				} else {
 					socket, err := proxier.portMapper.OpenLocalPort(&lp)
 					if err != nil {
-						msg := fmt.Sprintf("can't open %s, skipping this externalIP: %v", lp.String(), err)
+						msg := fmt.Sprintf("can't open port %s, skipping it", lp.String())
 
 						proxier.recorder.Eventf(
 							&v1.ObjectReference{
@@ -1272,7 +1269,7 @@ func (proxier *Proxier) syncProxyRules() {
 								UID:       types.UID(proxier.hostname),
 								Namespace: "",
 							}, v1.EventTypeWarning, err.Error(), msg)
-						klog.Error(msg)
+						klog.ErrorS(err, "can't open port, skipping it", "port", lp.String())
 						continue
 					}
 					klog.V(2).Infof("Opened local port %s", lp.String())
@@ -1288,7 +1285,7 @@ func (proxier *Proxier) syncProxyRules() {
 				SetType:  utilipset.HashIPPort,
 			}
 
-			if svcInfo.OnlyNodeLocalEndpoints() {
+			if svcInfo.NodeLocalExternal() {
 				if valid := proxier.ipsetList[kubeExternalIPLocalSet].validateEntry(entry); !valid {
 					klog.Errorf("%s", fmt.Sprintf(EntryInvalidErr, entry, proxier.ipsetList[kubeExternalIPLocalSet].Name))
 					continue
@@ -1318,8 +1315,9 @@ func (proxier *Proxier) syncProxyRules() {
 				activeIPVSServices[serv.String()] = true
 				activeBindAddrs[serv.Address.String()] = true
 
-				onlyNodeLocalEndpoints := svcInfo.OnlyNodeLocalEndpoints()
-				if err := proxier.syncEndpoint(svcName, onlyNodeLocalEndpoints, serv); err != nil {
+				onlyNodeLocalEndpoints := svcInfo.NodeLocalExternal()
+				onlyNodeLocalEndpointsForInternal := svcInfo.NodeLocalInternal()
+				if err := proxier.syncEndpoint(svcName, onlyNodeLocalEndpoints, onlyNodeLocalEndpointsForInternal, serv); err != nil {
 					klog.Errorf("Failed to sync endpoint for service: %v, err: %v", serv, err)
 				}
 			} else {
@@ -1347,7 +1345,7 @@ func (proxier *Proxier) syncProxyRules() {
 				}
 				proxier.ipsetList[kubeLoadBalancerSet].activeEntries.Insert(entry.String())
 				// insert loadbalancer entry to lbIngressLocalSet if service externaltrafficpolicy=local
-				if svcInfo.OnlyNodeLocalEndpoints() {
+				if svcInfo.NodeLocalExternal() {
 					if valid := proxier.ipsetList[kubeLoadBalancerLocalSet].validateEntry(entry); !valid {
 						klog.Errorf("%s", fmt.Sprintf(EntryInvalidErr, entry, proxier.ipsetList[kubeLoadBalancerLocalSet].Name))
 						continue
@@ -1420,7 +1418,7 @@ func (proxier *Proxier) syncProxyRules() {
 				if err := proxier.syncService(svcNameString, serv, true, bindedAddresses); err == nil {
 					activeIPVSServices[serv.String()] = true
 					activeBindAddrs[serv.Address.String()] = true
-					if err := proxier.syncEndpoint(svcName, svcInfo.OnlyNodeLocalEndpoints(), serv); err != nil {
+					if err := proxier.syncEndpoint(svcName, svcInfo.NodeLocalExternal(), svcInfo.NodeLocalInternal(), serv); err != nil {
 						klog.Errorf("Failed to sync endpoint for service: %v, err: %v", serv, err)
 					}
 				} else {
@@ -1465,7 +1463,16 @@ func (proxier *Proxier) syncProxyRules() {
 				} else if svcInfo.Protocol() != v1.ProtocolSCTP {
 					socket, err := proxier.portMapper.OpenLocalPort(&lp)
 					if err != nil {
-						klog.Errorf("can't open %s, skipping this nodePort: %v", lp.String(), err)
+						msg := fmt.Sprintf("can't open port %s, skipping it", lp.String())
+
+						proxier.recorder.Eventf(
+							&v1.ObjectReference{
+								Kind:      "Node",
+								Name:      proxier.hostname,
+								UID:       types.UID(proxier.hostname),
+								Namespace: "",
+							}, v1.EventTypeWarning, err.Error(), msg)
+						klog.ErrorS(err, "can't open port, skipping it", "port", lp.String())
 						continue
 					}
 					klog.V(2).Infof("Opened local port %s", lp.String())
@@ -1534,7 +1541,7 @@ func (proxier *Proxier) syncProxyRules() {
 			}
 
 			// Add externaltrafficpolicy=local type nodeport entry
-			if svcInfo.OnlyNodeLocalEndpoints() {
+			if svcInfo.NodeLocalExternal() {
 				var nodePortLocalSet *IPSet
 				switch protocol {
 				case utilipset.ProtocolTCP:
@@ -1579,7 +1586,7 @@ func (proxier *Proxier) syncProxyRules() {
 				// There is no need to bind Node IP to dummy interface, so set parameter `bindAddr` to `false`.
 				if err := proxier.syncService(svcNameString, serv, false, bindedAddresses); err == nil {
 					activeIPVSServices[serv.String()] = true
-					if err := proxier.syncEndpoint(svcName, svcInfo.OnlyNodeLocalEndpoints(), serv); err != nil {
+					if err := proxier.syncEndpoint(svcName, svcInfo.NodeLocalExternal(), svcInfo.NodeLocalInternal(), serv); err != nil {
 						klog.Errorf("Failed to sync endpoint for service: %v, err: %v", serv, err)
 					}
 				} else {
@@ -2030,7 +2037,7 @@ func (proxier *Proxier) syncService(svcName string, vs *utilipvs.VirtualServer, 
 	return nil
 }
 
-func (proxier *Proxier) syncEndpoint(svcPortName proxy.ServicePortName, onlyNodeLocalEndpoints bool, vs *utilipvs.VirtualServer) error {
+func (proxier *Proxier) syncEndpoint(svcPortName proxy.ServicePortName, onlyNodeLocalEndpoints bool, onlyNodeLocalEndpointsForInternal bool, vs *utilipvs.VirtualServer) error {
 	appliedVirtualServer, err := proxier.ipvs.GetVirtualServer(vs)
 	if err != nil {
 		klog.Errorf("Failed to get IPVS service, error: %v", err)
@@ -2056,13 +2063,15 @@ func (proxier *Proxier) syncEndpoint(svcPortName proxy.ServicePortName, onlyNode
 
 	endpoints := proxier.endpointsMap[svcPortName]
 
-	// Service Topology will not be enabled in the following cases:
-	// 1. externalTrafficPolicy=Local (mutually exclusive with service topology).
-	// 2. ServiceTopology is not enabled.
-	// 3. EndpointSlice is not enabled (service topology depends on endpoint slice
-	// to get topology information).
-	if !onlyNodeLocalEndpoints && utilfeature.DefaultFeatureGate.Enabled(features.ServiceTopology) && utilfeature.DefaultFeatureGate.Enabled(features.EndpointSliceProxying) {
-		endpoints = proxy.FilterTopologyEndpoint(proxier.nodeLabels, proxier.serviceMap[svcPortName].TopologyKeys(), endpoints)
+	// Filtering for topology aware endpoints. This function will only
+	// filter endpoints if appropriate feature gates are enabled and the
+	// Service does not have conflicting configuration such as
+	// externalTrafficPolicy=Local.
+	svcInfo, ok := proxier.serviceMap[svcPortName]
+	if !ok {
+		klog.Warningf("Unable to filter endpoints due to missing Service info for %s", svcPortName)
+	} else {
+		endpoints = proxy.FilterEndpoints(endpoints, svcInfo, proxier.nodeLabels)
 	}
 
 	for _, epInfo := range endpoints {

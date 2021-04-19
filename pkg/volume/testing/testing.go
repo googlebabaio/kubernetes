@@ -380,9 +380,9 @@ func (plugin *FakeVolumePlugin) NewDetacher() (Detacher, error) {
 	plugin.NewDetacherCallCount = plugin.NewDetacherCallCount + 1
 	detacher := plugin.getFakeVolume(&plugin.Detachers)
 	attacherList := plugin.Attachers
-	if attacherList != nil && len(attacherList) > 0 {
+	if len(attacherList) > 0 {
 		detacherList := plugin.Detachers
-		if detacherList != nil && len(detacherList) > 0 {
+		if len(detacherList) > 0 {
 			detacherList[0].VolumesAttached = attacherList[0].VolumesAttached
 		}
 
@@ -1618,7 +1618,7 @@ func GetTestVolumePluginMgr(t *testing.T) (*VolumePluginMgr, *FakeVolumePlugin) 
 		nil,     /* kubeClient */
 		plugins, /* plugins */
 	)
-	return v.pluginMgr, plugins[0].(*FakeVolumePlugin)
+	return v.GetPluginMgr(), plugins[0].(*FakeVolumePlugin)
 }
 
 func GetTestKubeletVolumePluginMgr(t *testing.T) (*VolumePluginMgr, *FakeVolumePlugin) {
@@ -1629,7 +1629,7 @@ func GetTestKubeletVolumePluginMgr(t *testing.T) (*VolumePluginMgr, *FakeVolumeP
 		nil,     /* kubeClient */
 		plugins, /* plugins */
 	)
-	return v.pluginMgr, plugins[0].(*FakeVolumePlugin)
+	return v.GetPluginMgr(), plugins[0].(*FakeVolumePlugin)
 }
 
 // CreateTestPVC returns a provisionable PVC for tests

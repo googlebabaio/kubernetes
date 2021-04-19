@@ -1020,14 +1020,11 @@ func (proxier *Proxier) syncProxyRules() {
 
 		allEndpoints := proxier.endpointsMap[svcName]
 
-		// Service Topology will not be enabled in the following cases:
-		// 1. externalTrafficPolicy=Local (mutually exclusive with service topology).
-		// 2. ServiceTopology is not enabled.
-		// 3. EndpointSlice is not enabled (service topology depends on endpoint slice
-		// to get topology information).
-		if !svcInfo.OnlyNodeLocalEndpoints() && utilfeature.DefaultFeatureGate.Enabled(features.ServiceTopology) && utilfeature.DefaultFeatureGate.Enabled(features.EndpointSliceProxying) {
-			allEndpoints = proxy.FilterTopologyEndpoint(proxier.nodeLabels, svcInfo.TopologyKeys(), allEndpoints)
-		}
+		// Filtering for topology aware endpoints. This function will only
+		// filter endpoints if appropriate feature gates are enabled and the
+		// Service does not have conflicting configuration such as
+		// externalTrafficPolicy=Local.
+		allEndpoints = proxy.FilterEndpoints(allEndpoints, svcInfo, proxier.nodeLabels)
 
 		readyEndpoints := make([]proxy.Endpoint, 0, len(allEndpoints))
 		for _, endpoint := range allEndpoints {
@@ -1051,7 +1048,7 @@ func (proxier *Proxier) syncProxyRules() {
 		}
 
 		svcXlbChain := svcInfo.serviceLBChainName
-		if svcInfo.OnlyNodeLocalEndpoints() {
+		if svcInfo.NodeLocalExternal() {
 			// Only for services request OnlyLocal traffic
 			// create the per-service LB chain, retaining counters if possible.
 			if lbChain, ok := existingNATChains[svcXlbChain]; ok {
@@ -1113,7 +1110,7 @@ func (proxier *Proxier) syncProxyRules() {
 				} else {
 					socket, err := proxier.portMapper.OpenLocalPort(&lp)
 					if err != nil {
-						msg := fmt.Sprintf("can't open %s, skipping this externalIP: %v", lp.String(), err)
+						msg := fmt.Sprintf("can't open port %s, skipping it", lp.String())
 
 						proxier.recorder.Eventf(
 							&v1.ObjectReference{
@@ -1122,7 +1119,7 @@ func (proxier *Proxier) syncProxyRules() {
 								UID:       types.UID(proxier.hostname),
 								Namespace: "",
 							}, v1.EventTypeWarning, err.Error(), msg)
-						klog.ErrorS(err, "can't open port, skipping externalIP", "port", lp.String())
+						klog.ErrorS(err, "can't open port, skipping it", "port", lp.String())
 						continue
 					}
 					klog.V(2).InfoS("Opened local port", "port", lp.String())
@@ -1144,7 +1141,7 @@ func (proxier *Proxier) syncProxyRules() {
 				// and the traffic is NOT Local. Local traffic coming from Pods and Nodes will
 				// be always forwarded to the corresponding Service, so no need to SNAT
 				// If we can't differentiate the local traffic we always SNAT.
-				if !svcInfo.OnlyNodeLocalEndpoints() {
+				if !svcInfo.NodeLocalExternal() {
 					destChain = svcChain
 					// This masquerades off-cluster traffic to a External IP.
 					if proxier.localDetector.IsImplemented() {
@@ -1204,7 +1201,7 @@ func (proxier *Proxier) syncProxyRules() {
 					chosenChain := svcXlbChain
 					// If we are proxying globally, we need to masquerade in case we cross nodes.
 					// If we are proxying only locally, we can retain the source IP.
-					if !svcInfo.OnlyNodeLocalEndpoints() {
+					if !svcInfo.NodeLocalExternal() {
 						utilproxy.WriteLine(proxier.natRules, append(args, "-j", string(KubeMarkMasqChain))...)
 						chosenChain = svcChain
 					}
@@ -1286,7 +1283,16 @@ func (proxier *Proxier) syncProxyRules() {
 				} else if svcInfo.Protocol() != v1.ProtocolSCTP {
 					socket, err := proxier.portMapper.OpenLocalPort(&lp)
 					if err != nil {
-						klog.ErrorS(err, "can't open port, skipping this nodePort", "port", lp.String())
+						msg := fmt.Sprintf("can't open port %s, skipping it", lp.String())
+
+						proxier.recorder.Eventf(
+							&v1.ObjectReference{
+								Kind:      "Node",
+								Name:      proxier.hostname,
+								UID:       types.UID(proxier.hostname),
+								Namespace: "",
+							}, v1.EventTypeWarning, err.Error(), msg)
+						klog.ErrorS(err, "can't open port, skipping it", "port", lp.String())
 						continue
 					}
 					klog.V(2).InfoS("Opened local port", "port", lp.String())
@@ -1301,7 +1307,7 @@ func (proxier *Proxier) syncProxyRules() {
 					"-m", protocol, "-p", protocol,
 					"--dport", strconv.Itoa(svcInfo.NodePort()),
 				)
-				if !svcInfo.OnlyNodeLocalEndpoints() {
+				if !svcInfo.NodeLocalExternal() {
 					// Nodeports need SNAT, unless they're local.
 					utilproxy.WriteLine(proxier.natRules, append(args, "-j", string(KubeMarkMasqChain))...)
 					// Jump to the service chain.
@@ -1395,7 +1401,7 @@ func (proxier *Proxier) syncProxyRules() {
 		localEndpointChains := make([]utiliptables.Chain, 0)
 		for i, endpointChain := range endpointChains {
 			// Write ingress loadbalancing & DNAT rules only for services that request OnlyLocal traffic.
-			if svcInfo.OnlyNodeLocalEndpoints() && endpoints[i].IsLocal {
+			if svcInfo.NodeLocalExternal() && endpoints[i].IsLocal {
 				localEndpointChains = append(localEndpointChains, endpointChains[i])
 			}
 
@@ -1436,7 +1442,7 @@ func (proxier *Proxier) syncProxyRules() {
 		}
 
 		// The logic below this applies only if this service is marked as OnlyLocal
-		if !svcInfo.OnlyNodeLocalEndpoints() {
+		if !svcInfo.NodeLocalExternal() {
 			continue
 		}
 
@@ -1604,7 +1610,12 @@ func (proxier *Proxier) syncProxyRules() {
 	proxier.iptablesData.Write(proxier.natChains.Bytes())
 	proxier.iptablesData.Write(proxier.natRules.Bytes())
 
-	klog.V(5).InfoS("Restoring iptables", "rules", proxier.iptablesData.Bytes())
+	numberFilterIptablesRules := utilproxy.CountBytesLines(proxier.filterRules.Bytes())
+	metrics.IptablesRulesTotal.WithLabelValues(string(utiliptables.TableFilter)).Set(float64(numberFilterIptablesRules))
+	numberNatIptablesRules := utilproxy.CountBytesLines(proxier.natRules.Bytes())
+	metrics.IptablesRulesTotal.WithLabelValues(string(utiliptables.TableNAT)).Set(float64(numberNatIptablesRules))
+
+	klog.V(5).InfoS("Restoring iptables", "rules", string(proxier.iptablesData.Bytes()))
 	err = proxier.iptables.RestoreAll(proxier.iptablesData.Bytes(), utiliptables.NoFlushTables, utiliptables.RestoreCounters)
 	if err != nil {
 		klog.ErrorS(err, "Failed to execute iptables-restore")
